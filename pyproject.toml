@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nemotron3-fc"
+version = "0.1.0"
+description = "LoRA training, evaluation, and vLLM serving for Nemotron tool calling"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+train = [
+  "accelerate>=1.15",
+  "peft>=0.21",
+  "safetensors>=0.5",
+  "torch>=2.10",
+  "transformers>=5.5",
+]
+serve = ["vllm>=0.18"]
+
+[project.scripts]
+nemotron3-fc = "nemotron3_fc.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nemotron3_fc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
