@@ -1,0 +1,29 @@
+{
+  "output_dir": "../outputs/prepared-data",
+  "seed": 2026,
+  "splits": {
+    "train": 0.8,
+    "validation": 0.1,
+    "test": 0.1
+  },
+  "minimum_holdout_multiturn": {
+    "toolace": 40,
+    "xlam": 0
+  },
+  "sources": [
+    {
+      "name": "toolace",
+      "adapter": "toolace",
+      "path": "../data/toolace/data.json",
+      "expected_records": 11300,
+      "expected_sha256": "ba12c083fca7e8da48c67ad5b895e495447da7c66e39a2e19742c082e6cb537e"
+    },
+    {
+      "name": "xlam",
+      "adapter": "xlam",
+      "path": "../data/xlam/xlam_function_calling_60k.json",
+      "expected_records": 60000,
+      "expected_sha256": "4ef5c6f0dc552f2231f93f5853a9ef431e9e806d7aa514d0f6b615606ce576c6"
+    }
+  ]
+}
