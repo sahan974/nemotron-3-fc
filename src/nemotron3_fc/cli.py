@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("--path", required=True, type=Path)
     prepare = commands.add_parser("prepare-data", help="Convert, split, audit, and write configured datasets")
     prepare.add_argument("--config", required=True, type=Path)
+    train = commands.add_parser("train", help="Run configured BF16 LoRA training")
+    train.add_argument("--config", required=True, type=Path)
     return parser
 
 
@@ -57,6 +59,12 @@ def main(argv: list[str] | None = None) -> int:
         return inspect_dataset(args.adapter, args.path)
     if args.command == "prepare-data":
         prepare_data(load_preparation_config(args.config), default_registry())
+        return 0
+    if args.command == "train":
+        from nemotron3_fc.training.config import load_training_config
+        from nemotron3_fc.training.trainer import run_training
+
+        run_training(load_training_config(args.config))
         return 0
     raise RuntimeError(f"Unhandled command: {args.command}")
 

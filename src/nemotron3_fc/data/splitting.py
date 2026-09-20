@@ -56,6 +56,8 @@ def plan_splits(
     duplicate_rejections = {source: [] for source in sources}
     retained: list[CanonicalRecord] = []
     first_fingerprint: dict[str, str] = {}
+    # Fingerprints are global across sources: an exact ToolACE/xLAM duplicate
+    # must not survive merely because it came from a different adapter.
     for source in sources:
         for record in converted[source]:
             fingerprint = record_fingerprint(record)

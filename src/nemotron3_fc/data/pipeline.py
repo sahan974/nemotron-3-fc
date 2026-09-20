@@ -114,6 +114,8 @@ def prepare_data(config: PreparationConfig, registry: DatasetRegistry) -> dict:
                     raise RuntimeError(f"Adapter identity mismatch for {source_id}")
                 rows.append(record)
             except CONVERSION_ERRORS as error:
+                # Malformed source rows are quarantined with their stable ID;
+                # unexpected implementation failures still propagate normally.
                 rejected.append({"id": source_id, "source": source.name, "stage": "conversion", "reason": str(error)})
         if len(rows) + len(rejected) != len(raw_records):
             raise RuntimeError(f"Conversion accounting failed for {source.name}")
@@ -141,6 +143,8 @@ def prepare_data(config: PreparationConfig, registry: DatasetRegistry) -> dict:
         "leakage_checks": {key: value for key, value in audit.items() if key.startswith("cross_split")},
     }
     config.output_dir.parent.mkdir(parents=True, exist_ok=True)
+    # Publish only after every source has passed round-trip and accounting checks,
+    # so consumers never observe a half-written split directory.
     staging = Path(tempfile.mkdtemp(prefix=f".{config.output_dir.name}-", dir=config.output_dir.parent))
     try:
         for source in config.sources:

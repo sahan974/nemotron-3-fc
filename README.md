@@ -22,3 +22,15 @@ Each configured source receives its own directory containing:
 - `manifest.json`
 
 The output root also contains `preparation.json` and `split-report.json`. Dataset paths, adapters, expected source identities, split ratios, random seed, and multi-turn holdout requirements are configuration values.
+
+## LoRA training
+
+Training is configured with JSON and consumes canonical split directories produced by the data pipeline.
+
+```bash
+nemotron3-fc train --config configs/train-toolace.example.json
+```
+
+The training command provides assistant-only supervision, over-length record windowing, deterministic token-budget batching, BF16 LoRA, fused AdamW, linear warmup followed by a constant learning rate, stratified monitoring, full epoch-end validation, atomic checkpoints, exact resumption, best-adapter selection, JSONL metrics, and separate-scale training plots.
+
+For a short integration run, copy the example configuration and change `mode` to `quick-test`. Full runs use every configured training and validation record. Resume runs use `start_from: "checkpoint"` and explicitly provide both `previous_checkpoint` and `previous_best` from the same run number.

@@ -1,0 +1,68 @@
+{
+  "model_path": "/models/nemotron-3-nano-30b-a3b-bf16",
+  "output_dir": "/outputs/nemotron-3-fc-toolace-run-01",
+  "mode": "full",
+  "run_number": 1,
+  "start_from": "fresh",
+  "previous_checkpoint": null,
+  "previous_best": null,
+  "epochs": 2,
+  "seed": 2026,
+  "monitor_seed": 3031,
+  "max_tokens": 4096,
+  "overlap_tokens": 256,
+  "learning_rate": 0.0001,
+  "warmup_steps": 100,
+  "weight_decay": 0.01,
+  "gradient_clip": 1.0,
+  "max_batch_examples": 4,
+  "max_batch_padded_tokens": 3072,
+  "length_bucket_records": 128,
+  "quick_train_per_source": 64,
+  "quick_validation_per_source": 32,
+  "log_every": 100,
+  "validate_every": 250,
+  "checkpoint_every": 250,
+  "stop_after_session_seconds": 36000,
+  "minimum_free_disk_gib": 11,
+  "checkpoint_minimum_free_disk_gib": 6,
+  "best_score_weights": {
+    "toolace": 0.8,
+    "toolace:no_call": 0.2
+  },
+  "datasets": [
+    {
+      "name": "toolace",
+      "root": "/data/nemotron-3-fc-toolace-split-v2",
+      "train": true,
+      "evaluate": true,
+      "expected_train_records": 8619,
+      "expected_validation_records": 1077,
+      "monitor_validation_records": 200
+    }
+  ],
+  "lora": {
+    "rank": 16,
+    "alpha": 32,
+    "dropout": 0.0,
+    "target_modules": [
+      "up_proj",
+      "down_proj",
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "in_proj"
+    ],
+    "expected_module_counts": {
+      "up_proj": 2967,
+      "down_proj": 2967,
+      "q_proj": 6,
+      "k_proj": 6,
+      "v_proj": 6,
+      "o_proj": 6,
+      "in_proj": 23
+    },
+    "expected_trainable_parameters": 439440384
+  }
+}
