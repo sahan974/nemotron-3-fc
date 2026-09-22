@@ -50,6 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--config", required=True, type=Path)
     train = commands.add_parser("train", help="Run configured BF16 LoRA training")
     train.add_argument("--config", required=True, type=Path)
+    evaluate = commands.add_parser("evaluate", help="Run vLLM inference and BFCL-style turn-level scoring")
+    evaluate.add_argument("--config", required=True, type=Path)
     return parser
 
 
@@ -65,6 +67,12 @@ def main(argv: list[str] | None = None) -> int:
         from nemotron3_fc.training.trainer import run_training
 
         run_training(load_training_config(args.config))
+        return 0
+    if args.command == "evaluate":
+        from nemotron3_fc.evaluation.config import load_evaluation_config
+        from nemotron3_fc.evaluation.runner import run_evaluation
+
+        run_evaluation(load_evaluation_config(args.config))
         return 0
     raise RuntimeError(f"Unhandled command: {args.command}")
 

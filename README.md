@@ -34,3 +34,13 @@ nemotron3-fc train --config configs/train-toolace.example.json
 The training command provides assistant-only supervision, over-length record windowing, deterministic token-budget batching, BF16 LoRA, fused AdamW, linear warmup followed by a constant learning rate, stratified monitoring, full epoch-end validation, atomic checkpoints, exact resumption, best-adapter selection, JSONL metrics, and separate-scale training plots.
 
 For a short integration run, copy the example configuration and change `mode` to `quick-test`. Full runs use every configured training and validation record. Resume runs use `start_from: "checkpoint"` and explicitly provide both `previous_checkpoint` and `previous_best` from the same run number.
+
+## vLLM evaluation
+
+The `evaluate` command performs greedy, batched generation for every assistant turn in a canonical held-out split. It scores native Nemotron tool calls with BFCL-v3-style AST, relevance, and irrelevance checks, alongside strict exact-call diagnostics. These are adapted metrics on the selected dataset, not official BFCL leaderboard results.
+
+```bash
+nemotron3-fc evaluate --config configs/evaluate.example.json
+```
+
+Set the model, dataset, adapter, and output paths in the JSON file. Adapters are named explicitly, so the same command can evaluate any number of checkpoints. The optional six-prompt base-versus-adapter probe requires call, no-call, and multi-turn examples; set `probe` to `false` for a split without those categories. A manifest hash is checked when the split directory has a manifest. Each adapter writes per-turn predictions, an input-identity file, and a summary; two adapters additionally produce a paired CSV and comparison summary. Completed predictions can be resumed from the same output directory or copied from `previous_results_dir` when all input identities match. Partial runs remain labeled incomplete.

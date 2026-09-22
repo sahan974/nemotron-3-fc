@@ -1,0 +1,18 @@
+{
+  "model_path": "/models/nemotron-3-nano-30b-a3b-bf16",
+  "dataset_root": "/data/toolace-split",
+  "split": "test",
+  "output_dir": "/outputs/toolace-evaluation",
+  "adapters": [
+    {"name": "epoch-1", "path": "/outputs/training/best-adapter", "step": 3404},
+    {"name": "epoch-2", "path": "/outputs/training/checkpoints/checkpoint-step-006808/adapter", "step": 6808}
+  ],
+  "expected_records": 1077,
+  "batch_size": 16,
+  "max_new_tokens": 1024,
+  "gpu_memory_utilization": 0.85,
+  "max_lora_rank": 16,
+  "session_limit_seconds": 36000,
+  "previous_results_dir": null,
+  "probe": true
+}
