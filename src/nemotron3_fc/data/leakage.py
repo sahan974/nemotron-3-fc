@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections import Counter
-from typing import Iterable, Mapping
+from collections.abc import Iterable, Mapping
 
 from nemotron3_fc.data.schema import CanonicalRecord
 
@@ -15,7 +14,12 @@ def record_fingerprint(record: CanonicalRecord) -> str:
     messages = []
     for message in record.messages:
         if message.role == "assistant" and message.tool_calls:
-            messages.append({"role": "assistant", "tool_calls": [{"name": call.name, "arguments": call.arguments} for call in message.tool_calls]})
+            messages.append(
+                {
+                    "role": "assistant",
+                    "tool_calls": [{"name": call.name, "arguments": call.arguments} for call in message.tool_calls],
+                }
+            )
         elif message.role == "tool":
             messages.append({"role": "tool", "name": message.name, "content": message.content})
         else:
@@ -24,7 +28,11 @@ def record_fingerprint(record: CanonicalRecord) -> str:
 
 
 def user_query_keys(record: CanonicalRecord) -> set[str]:
-    return {" ".join(message.content.casefold().split()) for message in record.messages if message.role == "user" and message.content.strip()}
+    return {
+        " ".join(message.content.casefold().split())
+        for message in record.messages
+        if message.role == "user" and message.content.strip()
+    }
 
 
 def offered_tool_keys(record: CanonicalRecord) -> set[str]:
@@ -42,6 +50,8 @@ def numeric_query_template(text: str) -> str:
             tokens.append("<number>" if any(character.isdigit() for character in token) else token.casefold())
             current.clear()
 
+    # Preserve words while collapsing every numeric-bearing token. This catches
+    # templated prompts whose only difference is an ID, date, or measurement.
     for character in text:
         if character.isascii() and (character.isalnum() or character == "_"):
             kind = "ascii"
@@ -84,9 +94,15 @@ def record_statistics(records: Iterable[CanonicalRecord]) -> dict[str, int]:
 
 def audit_split_leakage(split_records: Mapping[str, Mapping[str, list[CanonicalRecord]]]) -> dict:
     """Validate identities/content and prove configured leakage keys do not cross splits."""
-    owners: dict[str, dict[str, str]] = {"exact_user_query": {}, "offered_tool_definition": {}, "query_template": {}}
+    owners: dict[str, dict[str, str]] = {
+        "exact_user_query": {},
+        "offered_tool_definition": {},
+        "query_template": {},
+    }
     seen_ids, seen_fingerprints = set(), set()
     counts = {}
+
+    # Global ownership applies identical leakage constraints within and across sources.
     for source, splits in split_records.items():
         counts[source] = {}
         for split, records in splits.items():
@@ -105,6 +121,8 @@ def audit_split_leakage(split_records: Mapping[str, Mapping[str, list[CanonicalR
                     "offered_tool_definition": offered_tool_keys(record),
                     "query_template": query_template_keys(record),
                 }
+
+                # A semantic key may repeat within one split but cannot cross splits.
                 for category, keys in key_sets.items():
                     for key in keys:
                         previous = owners[category].get(key)
@@ -126,5 +144,7 @@ def is_multiturn(record: CanonicalRecord) -> bool:
 
 
 def _hash_json(value: object) -> str:
-    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode(
+        "utf-8"
+    )
     return hashlib.sha256(encoded).hexdigest()

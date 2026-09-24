@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from nemotron3_fc.data.adapters.common import make_name_map, split_outside_literals
 from nemotron3_fc.data.schema import Message, ToolCall, canonical_record
@@ -23,9 +24,16 @@ class XLAMAdapter:
         source_id, query = raw["id"], raw["query"]
         raw_tools = _decode_json_field(raw["tools"], "tools")
         answers = _decode_json_field(raw["answers"], "answers")
-        if not isinstance(query, str) or not isinstance(raw_tools, list) or not isinstance(answers, list) or not answers:
+        if (
+            not isinstance(query, str)
+            or not isinstance(raw_tools, list)
+            or not isinstance(answers, list)
+            or not answers
+        ):
             raise ValueError("invalid_query_tools_or_answers")
 
+        # xLAM contains repeated identical definitions. Collapse those safely,
+        # but reject duplicates that disagree under the same name.
         unique, seen, removed = [], {}, 0
         for tool in raw_tools:
             if not isinstance(tool, Mapping) or not isinstance(tool.get("name"), str) or not tool["name"]:
@@ -38,6 +46,7 @@ class XLAMAdapter:
                 seen[tool["name"]] = tool
                 unique.append(tool)
 
+        # Runtime-safe names are shared by definitions and expected calls.
         name_map = make_name_map(unique)
         tools = []
         for tool in unique:
@@ -54,14 +63,46 @@ class XLAMAdapter:
                 if "default" in specification:
                     property_schema["default"] = specification["default"]
                 properties[name] = property_schema
-            tools.append({"type": "function", "function": {"name": name_map[tool["name"]], "description": str(tool.get("description", "")), "parameters": {"type": "object", "properties": properties, "required": []}}})
+            tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name_map[tool["name"]],
+                        "description": str(tool.get("description", "")),
+                        "parameters": {"type": "object", "properties": properties, "required": []},
+                    },
+                }
+            )
 
         calls = []
         for call_index, answer in enumerate(answers):
-            if not isinstance(answer, Mapping) or answer.get("name") not in name_map or not isinstance(answer.get("arguments"), Mapping):
+            if (
+                not isinstance(answer, Mapping)
+                or answer.get("name") not in name_map
+                or not isinstance(answer.get("arguments"), Mapping)
+            ):
                 raise ValueError("answer_not_declared_function_call")
-            calls.append(ToolCall(id=f"call_{source_id}_1_{call_index}", name=name_map[answer["name"]], arguments=answer["arguments"]))
-        return canonical_record(record_id=f"xlam:{source_id}", tools=tools, messages=(Message(role="user", content=query), Message(role="assistant", tool_calls=tuple(calls))), source=self.name, metadata={"source_record_index": source_id, "original_to_canonical_names": name_map, "source_duplicate_tool_definitions_removed": removed})
+            calls.append(
+                ToolCall(
+                    id=f"call_{source_id}_1_{call_index}",
+                    name=name_map[answer["name"]],
+                    arguments=answer["arguments"],
+                )
+            )
+        return canonical_record(
+            record_id=f"xlam:{source_id}",
+            tools=tools,
+            messages=(
+                Message(role="user", content=query),
+                Message(role="assistant", tool_calls=tuple(calls)),
+            ),
+            source=self.name,
+            metadata={
+                "source_record_index": source_id,
+                "original_to_canonical_names": name_map,
+                "source_duplicate_tool_definitions_removed": removed,
+            },
+        )
 
 
 def _decode_json_field(value: Any, label: str) -> Any:
@@ -75,6 +116,8 @@ def _decode_json_field(value: Any, label: str) -> Any:
 
 def xlam_type_schema(label: Any) -> dict[str, Any]:
     """Translate xLAM's compact Python-like type labels to JSON Schema."""
+    # Optional/default annotations describe presence, not the underlying value
+    # type, so remove them before recursively translating containers.
     base = str(label).split(", optional")[0].split(", default")[0].strip()
     simple = {"str": "string", "int": "integer", "float": "number", "bool": "boolean"}
     if base in simple:
@@ -85,7 +128,12 @@ def xlam_type_schema(label: Any) -> dict[str, Any]:
         return {"anyOf": [xlam_type_schema(part) for part in split_outside_literals(base[6:-1], ",")]}
     if base.startswith("Tuple[") and base.endswith("]"):
         parts = split_outside_literals(base[6:-1], ",")
-        return {"type": "array", "prefixItems": [xlam_type_schema(part) for part in parts], "minItems": len(parts), "maxItems": len(parts)}
+        return {
+            "type": "array",
+            "prefixItems": [xlam_type_schema(part) for part in parts],
+            "minItems": len(parts),
+            "maxItems": len(parts),
+        }
     if base in ("list", "List", "set"):
         return {"type": "array"}
     if base == "Dict":

@@ -16,6 +16,8 @@ class DatasetRegistry:
         self._factories: dict[str, AdapterFactory] = {}
 
     def register(self, name: str, factory: AdapterFactory) -> None:
+        # Configuration names are case-insensitive; duplicate normalized names
+        # would make adapter selection dependent on registration order.
         normalized = name.strip().lower()
         if not normalized:
             raise ValueError("Dataset adapter name must not be empty")
@@ -33,4 +35,3 @@ class DatasetRegistry:
 
     def names(self) -> tuple[str, ...]:
         return tuple(sorted(self._factories))
-

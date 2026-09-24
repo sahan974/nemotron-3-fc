@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import hashlib
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Mapping, Sequence
 
-from nemotron3_fc.data.leakage import is_multiturn, offered_tool_keys, query_template_keys, record_fingerprint, user_query_keys
+from nemotron3_fc.data.leakage import (
+    is_multiturn,
+    offered_tool_keys,
+    query_template_keys,
+    record_fingerprint,
+    user_query_keys,
+)
 from nemotron3_fc.data.schema import CanonicalRecord
 
 SPLIT_NAMES = ("train", "validation", "test")
@@ -21,6 +27,7 @@ class SplitPlan:
 
 
 class _UnionFind:
+    # Union-find turns transitive leakage links into indivisible record groups.
     def __init__(self, size: int) -> None:
         self.parent = list(range(size))
         self.sizes = [1] * size
@@ -56,17 +63,26 @@ def plan_splits(
     duplicate_rejections = {source: [] for source in sources}
     retained: list[CanonicalRecord] = []
     first_fingerprint: dict[str, str] = {}
-    # Fingerprints are global across sources: an exact ToolACE/xLAM duplicate
-    # must not survive merely because it came from a different adapter.
+
+    # Global fingerprints remove exact duplicates across dataset sources.
     for source in sources:
         for record in converted[source]:
             fingerprint = record_fingerprint(record)
             if fingerprint in first_fingerprint:
-                duplicate_rejections[source].append({"id": record.id, "source": source, "stage": "exact_duplicate", "reason": "same_tools_and_messages", "kept_id": first_fingerprint[fingerprint]})
+                duplicate_rejections[source].append(
+                    {
+                        "id": record.id,
+                        "source": source,
+                        "stage": "exact_duplicate",
+                        "reason": "same_tools_and_messages",
+                        "kept_id": first_fingerprint[fingerprint],
+                    }
+                )
             else:
                 first_fingerprint[fingerprint] = record.id
                 retained.append(record)
 
+    # Conversations connected by shared queries or tool definitions form one indivisible group.
     groups = _linked_groups(retained)
     group_info = [_group_info(group, retained) for group in groups]
     assignments = _assign_groups(group_info, retained, ratios, seed, minimum_holdout_multiturn)
@@ -75,20 +91,36 @@ def plan_splits(
     for record, split in zip(retained, assignments):
         for template in query_template_keys(record):
             template_splits.setdefault(template, set()).add(split)
-    preferred = {template: next(split for split in SPLIT_NAMES if split in splits) for template, splits in template_splits.items()}
+    preferred = {
+        template: next(split for split in SPLIT_NAMES if split in splits)
+        for template, splits in template_splits.items()
+    }
 
+    # Quarantine ambiguous query templates rather than leaking them across held-out splits.
     rows = {source: {split: [] for split in SPLIT_NAMES} for source in sources}
     template_rejections = {source: [] for source in sources}
     for record, split in zip(retained, assignments):
         conflicts = sum(preferred[template] != split for template in query_template_keys(record))
         if conflicts:
-            template_rejections[record.source].append({"id": record.id, "source": record.source, "stage": "query_template_overlap", "reason": "template_would_cross_splits", "original_split": split, "conflicting_template_count": conflicts})
+            template_rejections[record.source].append(
+                {
+                    "id": record.id,
+                    "source": record.source,
+                    "stage": "query_template_overlap",
+                    "reason": "template_would_cross_splits",
+                    "original_split": split,
+                    "conflicting_template_count": conflicts,
+                }
+            )
         else:
             rows[record.source][split].append(record)
 
+    # Reconcile every original row with either one output split or one rejection reason.
     rejections = {}
     for source in sources:
-        rejections[source] = list(conversion_rejections[source]) + duplicate_rejections[source] + template_rejections[source]
+        rejections[source] = (
+            list(conversion_rejections[source]) + duplicate_rejections[source] + template_rejections[source]
+        )
         retained_count = sum(len(rows[source][split]) for split in SPLIT_NAMES)
         if retained_count + len(rejections[source]) != raw_counts[source]:
             raise RuntimeError(f"Raw-source accounting failed for {source}")
@@ -114,6 +146,8 @@ def plan_splits(
 def _linked_groups(records: Sequence[CanonicalRecord]) -> list[list[int]]:
     union = _UnionFind(len(records))
     owner: dict[tuple[str, str], int] = {}
+    # A shared query or offered tool joins records even when the link crosses
+    # source datasets. Connected records must receive the same split.
     for index, record in enumerate(records):
         keys = [("query", key) for key in user_query_keys(record)]
         keys.extend(("tool", key) for key in offered_tool_keys(record))
@@ -131,10 +165,21 @@ def _linked_groups(records: Sequence[CanonicalRecord]) -> list[list[int]]:
 def _group_info(indices: list[int], records: Sequence[CanonicalRecord]) -> dict:
     source_counts = Counter(records[index].source for index in indices)
     multiturn = Counter(records[index].source for index in indices if is_multiturn(records[index]))
-    return {"indices": indices, "sources": source_counts, "multiturn": multiturn, "smallest_id": min(records[index].id for index in indices)}
+    return {
+        "indices": indices,
+        "sources": source_counts,
+        "multiturn": multiturn,
+        "smallest_id": min(records[index].id for index in indices),
+    }
 
 
-def _assign_groups(group_info: list[dict], records: Sequence[CanonicalRecord], ratios: Mapping[str, float], seed: int, minimums: Mapping[str, int]) -> list[str]:
+def _assign_groups(
+    group_info: list[dict],
+    records: Sequence[CanonicalRecord],
+    ratios: Mapping[str, float],
+    seed: int,
+    minimums: Mapping[str, int],
+) -> list[str]:
     assignments: list[str | None] = [None] * len(records)
     source_totals = Counter(record.source for record in records)
     counts = {source: {split: 0 for split in SPLIT_NAMES} for source in source_totals}
@@ -147,25 +192,30 @@ def _assign_groups(group_info: list[dict], records: Sequence[CanonicalRecord], r
         for source, amount in group["sources"].items():
             counts[source][split] += amount
 
+    # Reserve independent multi-turn groups for both holdouts before the
+    # general ratio-balancing pass consumes them.
     for source, minimum in minimums.items():
         if minimum <= 0:
             continue
         reserved = {
-            split: sum(
-                group["multiturn"][source]
-                for group in group_info
-                if assignments[group["indices"][0]] == split
-            )
+            split: sum(group["multiturn"][source] for group in group_info if assignments[group["indices"][0]] == split)
             for split in ("validation", "test")
         }
         eligible = sorted(
-            (group for group in group_info if assignments[group["indices"][0]] is None and 0 < group["multiturn"][source] <= 25),
+            (
+                group
+                for group in group_info
+                if assignments[group["indices"][0]] is None and 0 < group["multiturn"][source] <= 25
+            ),
             key=lambda group: (-group["multiturn"][source], len(group["indices"]), group["smallest_id"]),
         )
         for group in eligible:
             if min(reserved.values()) >= minimum:
                 break
-            split = min(("validation", "test"), key=lambda candidate: (reserved[candidate], counts[source][candidate], candidate))
+            split = min(
+                ("validation", "test"),
+                key=lambda candidate: (reserved[candidate], counts[source][candidate], candidate),
+            )
             place(group, split)
             reserved[split] += group["multiturn"][source]
         if min(reserved.values()) < minimum:
@@ -178,14 +228,26 @@ def _assign_groups(group_info: list[dict], records: Sequence[CanonicalRecord], r
 
     remaining = sorted(
         (group for group in group_info if assignments[group["indices"][0]] is None),
-        key=lambda group: (-len(group["indices"]), hashlib.sha256(f"{seed}:{group['smallest_id']}".encode()).hexdigest()),
+        key=lambda group: (
+            -len(group["indices"]),
+            hashlib.sha256(f"{seed}:{group['smallest_id']}".encode()).hexdigest(),
+        ),
     )
     for group in remaining:
-        def score(candidate: str) -> float:
+
+        def score(candidate: str, current_group: dict = group) -> float:
             return sum(
-                (counts[source][split] + (group["sources"][source] if split == candidate else 0) - source_totals[source] * ratios[split]) ** 2 / source_totals[source]
-                for source in source_totals for split in SPLIT_NAMES
+                (
+                    counts[source][split]
+                    + (current_group["sources"][source] if split == candidate else 0)
+                    - source_totals[source] * ratios[split]
+                )
+                ** 2
+                / source_totals[source]
+                for source in source_totals
+                for split in SPLIT_NAMES
             )
+
         place(group, min(SPLIT_NAMES, key=score))
     if any(split is None for split in assignments):
         raise RuntimeError("A leakage-linked group was not assigned")

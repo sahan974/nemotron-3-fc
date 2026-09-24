@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 
 def sha256_file(path: Path) -> str:
@@ -50,10 +51,17 @@ def write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]
     count = 0
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n")
+            # Canonical key order and compact separators make hashes stable
+            # across platforms and independent executions.
+            handle.write(
+                json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
+            )
             count += 1
     return {"records": count, "sha256": sha256_file(path)}
 
 
 def write_json(path: Path, value: Any) -> None:
-    Path(path).write_text(json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
+    Path(path).write_text(
+        json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )

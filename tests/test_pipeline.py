@@ -8,7 +8,11 @@ from nemotron3_fc.data.pipeline import load_preparation_config, prepare_data
 
 def _xlam_record(index: int) -> dict:
     word = chr(ord("a") + index)
-    tool = {"name": f"lookup_{word}", "description": f"Lookup {word}", "parameters": {"query": {"type": "str"}}}
+    tool = {
+        "name": f"lookup_{word}",
+        "description": f"Lookup {word}",
+        "parameters": {"query": {"type": "str"}},
+    }
     return {
         "id": f"source-{word}",
         "query": f"ask {word}",
@@ -21,12 +25,17 @@ def test_prepare_data_writes_verified_nonempty_splits(tmp_path: Path):
     source = tmp_path / "xlam.json"
     source.write_text(json.dumps([_xlam_record(index) for index in range(20)]), encoding="utf-8")
     config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps({
-        "output_dir": "prepared",
-        "seed": 2026,
-        "splits": {"train": 0.6, "validation": 0.2, "test": 0.2},
-        "sources": [{"name": "xlam", "adapter": "xlam", "path": "xlam.json", "expected_records": 20}],
-    }), encoding="utf-8")
+    config_path.write_text(
+        json.dumps(
+            {
+                "output_dir": "prepared",
+                "seed": 2026,
+                "splits": {"train": 0.6, "validation": 0.2, "test": 0.2},
+                "sources": [{"name": "xlam", "adapter": "xlam", "path": "xlam.json", "expected_records": 20}],
+            }
+        ),
+        encoding="utf-8",
+    )
 
     config = load_preparation_config(config_path)
     report = prepare_data(config, default_registry())

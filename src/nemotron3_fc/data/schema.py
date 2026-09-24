@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Literal
 
 Role = Literal["system", "user", "assistant", "tool"]
 
@@ -27,7 +28,11 @@ class ToolCall:
         _ensure_json(self.arguments, "Tool-call arguments")
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "type": "function", "function": {"name": self.name, "arguments": dict(self.arguments)}}
+        return {
+            "id": self.id,
+            "type": "function",
+            "function": {"name": self.name, "arguments": dict(self.arguments)},
+        }
 
 
 @dataclass(frozen=True)
@@ -58,9 +63,12 @@ class Message:
                 raise TypeError("Non-tool message content must be a string or null")
         if self.role in {"system", "user"} and not isinstance(self.content, str):
             raise ValueError(f"{self.role.title()} messages require string content")
-        if self.role == "assistant" and not self.tool_calls:
-            if not isinstance(self.content, str) or not self.content.strip():
-                raise ValueError("Assistant text messages require non-empty content")
+        if (
+            self.role == "assistant"
+            and not self.tool_calls
+            and (not isinstance(self.content, str) or not self.content.strip())
+        ):
+            raise ValueError("Assistant text messages require non-empty content")
         for call in self.tool_calls:
             call.validate()
 
@@ -87,6 +95,7 @@ class CanonicalRecord:
     schema_version: str = "1.0"
 
     def validate(self) -> None:
+        # Central validation establishes the invariants required by downstream stages.
         if self.schema_version != "1.0":
             raise ValueError(f"Unsupported canonical schema version: {self.schema_version}")
         if not isinstance(self.id, str) or not self.id.strip():
@@ -101,6 +110,9 @@ class CanonicalRecord:
         definitions = {_tool_name(tool): _tool_parameters(tool) for tool in self.tools}
         if len(definitions) != len(self.tools):
             raise ValueError("Tool names must be unique within a record")
+
+        # Calls establish IDs and function names; later tool-result messages
+        # must resolve those IDs exactly once and with the same function name.
         calls: dict[str, str] = {}
         results: set[str] = set()
         for message in self.messages:
@@ -168,21 +180,35 @@ def _tool_parameters(tool: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def _validate_arguments(arguments: Mapping[str, Any], schema: Mapping[str, Any], tool_name: str) -> None:
+    # Preparation enforces declared keys and required fields. Complete JSON
+    # Schema semantics are applied by the BFCL evaluator rather than here.
     properties = schema.get("properties", {})
     required = schema.get("required", [])
     unknown = set(arguments) - set(properties)
     missing = set(required) - set(arguments)
     if unknown or missing:
-        raise ValueError(f"Arguments violate schema for {tool_name}: unknown={sorted(unknown)}, missing={sorted(missing)}")
+        raise ValueError(
+            f"Arguments violate schema for {tool_name}: unknown={sorted(unknown)}, missing={sorted(missing)}"
+        )
 
 
 def message_from_dict(raw: Mapping[str, Any]) -> Message:
     """Build a canonical message from its JSON representation."""
     calls = tuple(
-        ToolCall(id=str(call["id"]), name=str(call["function"]["name"]), arguments=call["function"].get("arguments", {}))
+        ToolCall(
+            id=str(call["id"]),
+            name=str(call["function"]["name"]),
+            arguments=call["function"].get("arguments", {}),
+        )
         for call in raw.get("tool_calls", ())
     )
-    return Message(role=raw["role"], content=raw.get("content"), tool_calls=calls, tool_call_id=raw.get("tool_call_id"), name=raw.get("name"))
+    return Message(
+        role=raw["role"],
+        content=raw.get("content"),
+        tool_calls=calls,
+        tool_call_id=raw.get("tool_call_id"),
+        name=raw.get("name"),
+    )
 
 
 def record_from_dict(raw: Mapping[str, Any]) -> CanonicalRecord:
@@ -198,8 +224,24 @@ def record_from_dict(raw: Mapping[str, Any]) -> CanonicalRecord:
     )
 
 
-def canonical_record(*, record_id: str, tools: Sequence[Mapping[str, Any]], messages: Sequence[Message], source: str, metadata: Mapping[str, Any] | None = None, schema_version: str = "1.0") -> CanonicalRecord:
+def canonical_record(
+    *,
+    record_id: str,
+    tools: Sequence[Mapping[str, Any]],
+    messages: Sequence[Message],
+    source: str,
+    metadata: Mapping[str, Any] | None = None,
+    schema_version: str = "1.0",
+) -> CanonicalRecord:
     """Construct and validate an immutable canonical record."""
-    record = CanonicalRecord(id=record_id, tools=tuple(tools), messages=tuple(messages), source=source, metadata={} if metadata is None else dict(metadata), schema_version=schema_version)
+    # A shared constructor provides source-independent canonical validation.
+    record = CanonicalRecord(
+        id=record_id,
+        tools=tuple(tools),
+        messages=tuple(messages),
+        source=source,
+        metadata={} if metadata is None else dict(metadata),
+        schema_version=schema_version,
+    )
     record.validate()
     return record

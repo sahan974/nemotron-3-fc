@@ -5,13 +5,22 @@ from nemotron3_fc.data.adapters.xlam import XLAMAdapter
 
 
 def test_toolace_adapter_preserves_multiturn_calls_and_results():
-    tools = [{"name": "weather.lookup", "description": "Weather", "parameters": {"type": "object", "properties": {"city": {"type": "str"}}, "required": ["city"]}}]
+    tools = [
+        {
+            "name": "weather.lookup",
+            "description": "Weather",
+            "parameters": {"type": "object", "properties": {"city": {"type": "str"}}, "required": ["city"]},
+        }
+    ]
     raw = {
         "system": TOOL_LIST_MARKER + json.dumps(tools),
         "conversations": [
             {"from": "user", "value": "Weather in Paris?"},
             {"from": "assistant", "value": "[weather.lookup(city='Paris')]"},
-            {"from": "tool", "value": json.dumps([{"name": "weather.lookup", "results": {"temperature": 20}}])},
+            {
+                "from": "tool",
+                "value": json.dumps([{"name": "weather.lookup", "results": {"temperature": 20}}]),
+            },
             {"from": "assistant", "value": "It is 20 degrees."},
         ],
     }
@@ -24,7 +33,11 @@ def test_toolace_adapter_preserves_multiturn_calls_and_results():
 
 
 def test_xlam_adapter_removes_identical_duplicate_definitions():
-    tool = {"name": "lookup", "description": "Lookup", "parameters": {"query": {"type": "str", "description": "Term"}}}
+    tool = {
+        "name": "lookup",
+        "description": "Lookup",
+        "parameters": {"query": {"type": "str", "description": "Term"}},
+    }
     raw = {
         "id": "x-1",
         "query": "Find alpha",
