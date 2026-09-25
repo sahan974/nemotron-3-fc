@@ -1,0 +1,11 @@
+{
+  "platform": "gpu-machine",
+  "training": {
+    "runtime_dir": ".venv-training",
+    "wheel_dirs": []
+  },
+  "serving": {
+    "runtime_dir": ".venv-serving",
+    "wheel_dirs": []
+  }
+}

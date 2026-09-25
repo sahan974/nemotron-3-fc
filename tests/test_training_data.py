@@ -13,12 +13,17 @@ class CharacterTokenizer:
 
     def apply_chat_template(self, messages, tools, tokenize, add_generation_prompt, **kwargs):
         del tools, tokenize, kwargs
-        rendered = "".join(f"<{message['role']}>{message.get('content', '')}</{message['role']}>" for message in messages)
+        rendered = "".join(
+            f"<{message['role']}>{message.get('content', '')}</{message['role']}>" for message in messages
+        )
         return rendered + ("<assistant>" if add_generation_prompt else "")
 
     def __call__(self, text, add_special_tokens, return_offsets_mapping):
         assert not add_special_tokens and return_offsets_mapping
-        return {"input_ids": [ord(character) for character in text], "offset_mapping": [(index, index + 1) for index in range(len(text))]}
+        return {
+            "input_ids": [ord(character) for character in text],
+            "offset_mapping": [(index, index + 1) for index in range(len(text))],
+        }
 
 
 def _window(index: int, source: str, tokens: int) -> EncodedWindow:
@@ -55,7 +60,10 @@ def test_schedule_hash_changes_when_batch_identity_changes():
     second = BatchItem(source="toolace", id="b", indices=(1,), tokens=11, supervised=6, examples=1)
     schedule = ((0, 0), (0, 1))
     original = schedule_sha256(schedule, (first, second))
-    changed = schedule_sha256(schedule, (first, BatchItem(source="toolace", id="changed", indices=(1,), tokens=11, supervised=6, examples=1)))
+    changed = schedule_sha256(
+        schedule,
+        (first, BatchItem(source="toolace", id="changed", indices=(1,), tokens=11, supervised=6, examples=1)),
+    )
     assert original != changed
 
 
@@ -77,24 +85,34 @@ def test_prepare_training_data_verifies_manifests_and_builds_both_validation_sco
 
     train_info = write_jsonl(data_root / "train.jsonl", [row(index) for index in range(12)])
     validation_info = write_jsonl(data_root / "validation.jsonl", [row(index + 100) for index in range(8)])
-    write_json(data_root / "manifest.json", {"source": "fixture", "files": {"train.jsonl": train_info, "validation.jsonl": validation_info}})
+    write_json(
+        data_root / "manifest.json",
+        {"source": "fixture", "files": {"train.jsonl": train_info, "validation.jsonl": validation_info}},
+    )
     config_path = tmp_path / "train.json"
-    config_path.write_text(json.dumps({
-        "model_path": "model",
-        "output_dir": "output",
-        "epochs": 2,
-        "best_score_weights": {"fixture": 1.0},
-        "datasets": [{
-            "name": "fixture",
-            "root": "fixture-data",
-            "train": True,
-            "evaluate": True,
-            "expected_train_records": 12,
-            "expected_validation_records": 8,
-            "monitor_validation_records": 4,
-        }],
-        "lora": {"target_modules": ["q_proj"]},
-    }), encoding="utf-8")
+    config_path.write_text(
+        json.dumps(
+            {
+                "model_path": "model",
+                "output_dir": "output",
+                "epochs": 2,
+                "best_score_weights": {"fixture": 1.0},
+                "datasets": [
+                    {
+                        "name": "fixture",
+                        "root": "fixture-data",
+                        "train": True,
+                        "evaluate": True,
+                        "expected_train_records": 12,
+                        "expected_validation_records": 8,
+                        "monitor_validation_records": 4,
+                    }
+                ],
+                "lora": {"target_modules": ["q_proj"]},
+            }
+        ),
+        encoding="utf-8",
+    )
     config = load_training_config(config_path)
     prepared = prepare_data(config, CharacterTokenizer())
     assert prepared.full_record_counts == {"fixture": 8}

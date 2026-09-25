@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
+
+from nemotron3_fc.paths import resolve_path
+
+DEFAULT_LORA_TARGETS = ("up_proj", "down_proj", "q_proj", "k_proj", "v_proj", "o_proj", "in_proj")
 
 
 @dataclass(frozen=True)
@@ -110,7 +115,8 @@ class TrainingConfig:
         }
 
     def identity_sha256(self) -> str:
-        encoded = json.dumps(self.identity(), sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        payload = json.dumps(self.identity(), sort_keys=True, separators=(",", ":"), allow_nan=False)
+        encoded = payload.encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
 
@@ -120,12 +126,16 @@ def load_training_config(path: Path) -> TrainingConfig:
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, Mapping):
         raise ValueError("Training configuration root must be an object")
+
     base = path.parent
     datasets = _datasets(raw.get("datasets"), base)
     lora = _lora(raw.get("lora", {}))
     mode = str(raw.get("mode", "full"))
     start_from = str(raw.get("start_from", "fresh"))
     stop_seconds = raw.get("stop_after_session_seconds", None)
+
+    # Parse scalar values before performing cross-field validation. This keeps
+    # type errors distinct from inconsistent run-state errors.
     config = TrainingConfig(
         model_path=_path(base, raw.get("model_path"), "model_path"),
         output_dir=_path(base, raw.get("output_dir"), "output_dir"),
@@ -147,13 +157,19 @@ def load_training_config(path: Path) -> TrainingConfig:
         max_batch_padded_tokens=_positive_int(raw.get("max_batch_padded_tokens", 3072), "max_batch_padded_tokens"),
         length_bucket_records=_positive_int(raw.get("length_bucket_records", 128), "length_bucket_records"),
         quick_train_per_source=_positive_int(raw.get("quick_train_per_source", 64), "quick_train_per_source"),
-        quick_validation_per_source=_positive_int(raw.get("quick_validation_per_source", 32), "quick_validation_per_source"),
+        quick_validation_per_source=_positive_int(
+            raw.get("quick_validation_per_source", 32), "quick_validation_per_source"
+        ),
         log_every=_positive_int(raw.get("log_every", 100), "log_every"),
         validate_every=_positive_int(raw.get("validate_every", 250), "validate_every"),
         checkpoint_every=_positive_int(raw.get("checkpoint_every", 250), "checkpoint_every"),
-        stop_after_session_seconds=None if stop_seconds is None else _positive_int(stop_seconds, "stop_after_session_seconds"),
+        stop_after_session_seconds=(
+            None if stop_seconds is None else _positive_int(stop_seconds, "stop_after_session_seconds")
+        ),
         minimum_free_disk_gib=_nonnegative_number(raw.get("minimum_free_disk_gib", 11), "minimum_free_disk_gib"),
-        checkpoint_minimum_free_disk_gib=_nonnegative_number(raw.get("checkpoint_minimum_free_disk_gib", 6), "checkpoint_minimum_free_disk_gib"),
+        checkpoint_minimum_free_disk_gib=_nonnegative_number(
+            raw.get("checkpoint_minimum_free_disk_gib", 6), "checkpoint_minimum_free_disk_gib"
+        ),
         best_score_weights=_weights(raw.get("best_score_weights")),
         datasets=datasets,
         lora=lora,
@@ -165,7 +181,10 @@ def load_training_config(path: Path) -> TrainingConfig:
 def _datasets(value: Any, base: Path) -> tuple[DatasetConfig, ...]:
     if not isinstance(value, list) or not value:
         raise ValueError("datasets must be a non-empty list")
-    result, names = [], set()
+
+    result = []
+    names = set()
+    # Each configured dataset must participate in training, evaluation, or both.
     for row in value:
         if not isinstance(row, Mapping):
             raise ValueError("Each dataset configuration must be an object")
@@ -173,52 +192,101 @@ def _datasets(value: Any, base: Path) -> tuple[DatasetConfig, ...]:
         if not name or name in names:
             raise ValueError(f"Dataset names must be non-empty and unique: {name!r}")
         names.add(name)
-        train, evaluate = bool(row.get("train", False)), bool(row.get("evaluate", False))
+
+        train = bool(row.get("train", False))
+        evaluate = bool(row.get("evaluate", False))
         if not train and not evaluate:
             raise ValueError(f"Dataset {name} is neither a training nor evaluation source")
-        result.append(DatasetConfig(
-            name=name,
-            root=_path(base, row.get("root"), f"datasets[{name}].root"),
-            train=train,
-            evaluate=evaluate,
-            expected_train_records=_optional_positive_int(row.get("expected_train_records"), f"{name}.expected_train_records"),
-            expected_validation_records=_optional_positive_int(row.get("expected_validation_records"), f"{name}.expected_validation_records"),
-            monitor_validation_records=_positive_int(row.get("monitor_validation_records", 200), f"{name}.monitor_validation_records") if evaluate else 0,
-        ))
+
+        result.append(
+            DatasetConfig(
+                name=name,
+                root=_path(base, row.get("root"), f"datasets[{name}].root"),
+                train=train,
+                evaluate=evaluate,
+                expected_train_records=_optional_positive_int(
+                    row.get("expected_train_records"), f"{name}.expected_train_records"
+                ),
+                expected_validation_records=_optional_positive_int(
+                    row.get("expected_validation_records"), f"{name}.expected_validation_records"
+                ),
+                monitor_validation_records=(
+                    _positive_int(row.get("monitor_validation_records", 200), f"{name}.monitor_validation_records")
+                    if evaluate
+                    else 0
+                ),
+            )
+        )
     return tuple(result)
 
 
 def _lora(value: Any) -> LoraConfig:
     if not isinstance(value, Mapping):
         raise ValueError("lora must be an object")
-    targets = value.get("target_modules", ["up_proj", "down_proj", "q_proj", "k_proj", "v_proj", "o_proj", "in_proj"])
+
+    targets = value.get("target_modules", list(DEFAULT_LORA_TARGETS))
     if not isinstance(targets, list) or not targets or any(not isinstance(item, str) or not item for item in targets):
         raise ValueError("lora.target_modules must be a non-empty string list")
+
+    # Optional architecture expectations detect changes in LoRA module coverage.
     counts = value.get("expected_module_counts")
     if counts is not None:
-        if not isinstance(counts, Mapping) or set(counts) != set(targets) or any(not isinstance(item, int) or item < 0 for item in counts.values()):
+        if (
+            not isinstance(counts, Mapping)
+            or set(counts) != set(targets)
+            or any(not isinstance(item, int) or item < 0 for item in counts.values())
+        ):
             raise ValueError("lora.expected_module_counts must define every target with non-negative counts")
         counts = {str(key): int(item) for key, item in counts.items()}
+
     trainable = _optional_positive_int(value.get("expected_trainable_parameters"), "lora.expected_trainable_parameters")
     dropout = _nonnegative_number(value.get("dropout", 0.0), "lora.dropout")
     if dropout >= 1:
         raise ValueError("lora.dropout must be less than 1")
-    return LoraConfig(rank=_positive_int(value.get("rank", 16), "lora.rank"), alpha=_positive_int(value.get("alpha", 32), "lora.alpha"), dropout=dropout, target_modules=tuple(targets), expected_module_counts=counts, expected_trainable_parameters=trainable)
+    return LoraConfig(
+        rank=_positive_int(value.get("rank", 16), "lora.rank"),
+        alpha=_positive_int(value.get("alpha", 32), "lora.alpha"),
+        dropout=dropout,
+        target_modules=tuple(targets),
+        expected_module_counts=counts,
+        expected_trainable_parameters=trainable,
+    )
 
 
 def _validate_config(config: TrainingConfig) -> None:
+    _validate_run_mode(config)
+    _validate_token_windows(config)
+    _validate_dataset_roles(config)
+    _validate_selection_metrics(config)
+
+
+def _validate_run_mode(config: TrainingConfig) -> None:
+    """Validate fresh and resumed run state without touching checkpoint files."""
     if config.mode not in {"full", "quick-test"}:
         raise ValueError("mode must be 'full' or 'quick-test'")
     if config.start_from not in {"fresh", "checkpoint"}:
         raise ValueError("start_from must be 'fresh' or 'checkpoint'")
-    if config.start_from == "fresh" and (config.previous_checkpoint is not None or config.previous_best is not None):
+
+    has_previous_state = config.previous_checkpoint is not None or config.previous_best is not None
+    has_complete_previous_state = config.previous_checkpoint is not None and config.previous_best is not None
+    if config.start_from == "fresh" and has_previous_state:
         raise ValueError("Fresh runs must not specify previous_checkpoint or previous_best")
-    if config.start_from == "checkpoint" and (config.previous_checkpoint is None or config.previous_best is None):
+    if config.start_from == "checkpoint" and not has_complete_previous_state:
         raise ValueError("Checkpoint runs require previous_checkpoint and previous_best")
+
+
+def _validate_token_windows(config: TrainingConfig) -> None:
     if config.overlap_tokens >= config.max_tokens:
         raise ValueError("overlap_tokens must be smaller than max_tokens")
+
+
+def _validate_dataset_roles(config: TrainingConfig) -> None:
     if not config.train_datasets or not config.evaluation_datasets:
         raise ValueError("At least one training and one evaluation dataset are required")
+
+
+def _validate_selection_metrics(config: TrainingConfig) -> None:
+    # Selection weights may target a complete dataset or a supported stratum.
     valid_metrics = {dataset.name for dataset in config.evaluation_datasets}
     valid_metrics.update(f"{dataset.name}:no_call" for dataset in config.evaluation_datasets)
     valid_metrics.update(f"{dataset.name}:multi_turn" for dataset in config.evaluation_datasets)
@@ -235,10 +303,7 @@ def _weights(value: Any) -> Mapping[str, float]:
 
 
 def _path(base: Path, value: Any, label: str) -> Path:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{label} must be a path string")
-    candidate = Path(value).expanduser()
-    return (base / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+    return resolve_path(base, value, label)
 
 
 def _optional_path(base: Path, value: Any) -> Path | None:

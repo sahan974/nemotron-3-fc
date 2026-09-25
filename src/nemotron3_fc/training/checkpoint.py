@@ -1,4 +1,4 @@
-"""Atomic LoRA checkpoints with exact schedule and RNG restoration."""
+"""LoRA checkpoints with exact schedule and RNG restoration."""
 
 from __future__ import annotations
 
@@ -20,6 +20,8 @@ def capture_rng() -> dict[str, Any]:
     import numpy as np
     import torch
 
+    # JSON-compatible RNG state is stored alongside optimizer and scheduler
+    # state so resumption reproduces dropout and batch behavior exactly.
     numpy_state, python_state = np.random.get_state(), random.getstate()
     return {
         "python": [python_state[0], list(python_state[1]), python_state[2]],
@@ -34,7 +36,15 @@ def restore_rng(state: dict[str, Any]) -> None:
     import torch
 
     random.setstate((state["python"][0], tuple(state["python"][1]), state["python"][2]))
-    np.random.set_state((state["numpy"][0], np.array(state["numpy"][1], dtype=np.uint32), state["numpy"][2], state["numpy"][3], state["numpy"][4]))
+    np.random.set_state(
+        (
+            state["numpy"][0],
+            np.array(state["numpy"][1], dtype=np.uint32),
+            state["numpy"][2],
+            state["numpy"][3],
+            state["numpy"][4],
+        )
+    )
     torch.set_rng_state(torch.tensor(state["torch_cpu"], dtype=torch.uint8))
     torch.cuda.set_rng_state_all([torch.tensor(item, dtype=torch.uint8) for item in state["torch_cuda"]])
 
@@ -70,35 +80,45 @@ def save_checkpoint(
         model.save_pretrained(staging / "adapter", selected_adapters=["default"], safe_serialization=True)
         torch.save(optimizer.state_dict(), staging / "optimizer.pt")
         torch.save(scheduler.state_dict(), staging / "scheduler.pt")
-        write_json(staging / "state.json", {
-            "schema_version": 3,
-            "next_position": position,
-            "total_updates": len(data.schedule),
-            "tokens_processed": tokens_processed,
-            "progress_hash": progress_hash,
-            "best_score_observed": best_score if math.isfinite(best_score) else None,
-            "rng": capture_rng(),
-            "source_run_number": config.run_number,
-        })
+        write_json(
+            staging / "state.json",
+            {
+                "schema_version": 3,
+                "next_position": position,
+                "total_updates": len(data.schedule),
+                "tokens_processed": tokens_processed,
+                "progress_hash": progress_hash,
+                "best_score_observed": best_score if math.isfinite(best_score) else None,
+                "rng": capture_rng(),
+                "source_run_number": config.run_number,
+            },
+        )
         # Hash the complete payload before publishing; the manifest is excluded
         # because it contains these hashes.
         files = {str(path.relative_to(staging)): sha256_file(path) for path in staging.rglob("*") if path.is_file()}
-        write_json(staging / "manifest.json", {
-            "schema_version": 3,
-            "model_path": str(config.model_path),
-            "training_identity_sha256": config.identity_sha256(),
-            "schedule_sha256": data.schedule_sha256,
-            "dataset_identities": data.dataset_identities,
-            "torch": torch.__version__,
-            "transformers": transformers.__version__,
-            "peft": peft.__version__,
-            "files": files,
-        })
+        write_json(
+            staging / "manifest.json",
+            {
+                "schema_version": 3,
+                "model_path": str(config.model_path),
+                "training_identity_sha256": config.identity_sha256(),
+                "schedule_sha256": data.schedule_sha256,
+                "dataset_identities": data.dataset_identities,
+                "torch": torch.__version__,
+                "transformers": transformers.__version__,
+                "peft": peft.__version__,
+                "files": files,
+            },
+        )
+        # Publishing is atomic on the same filesystem; incomplete checkpoints
+        # retain the `.partial` name and are never considered resumable.
         staging.rename(complete)
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
 
+    # Retire an older checkpoint only after the replacement is complete and
+    # only when its manifest proves it is a managed checkpoint directory.
     for old in root.iterdir():
         if old.is_dir() and old.name.startswith("checkpoint-step-") and old != complete:
             if old.resolve().parent != root.resolve() or not (old / "manifest.json").is_file():
@@ -128,14 +148,23 @@ def load_checkpoint(model: Any, config: TrainingConfig, data: PreparedData) -> t
     if manifest_schema == 3 and manifest.get("dataset_identities") != data.dataset_identities:
         raise RuntimeError("Checkpoint dataset hashes or counts differ from this run")
     if manifest_schema == 2:
-        # Notebook v2 has no repository identity fields, so schedule, runtime
-        # versions, tensor shapes, and serialized state are its compatibility boundary.
-        print("LEGACY CHECKPOINT schema=2; validating model, package versions, schedule, adapter tensors, optimizer, scheduler, and RNG state")
+        # Legacy schema v2 omits repository identity fields. Compatibility is
+        # therefore established through schedule, runtime, tensor, and state validation.
+        print(
+            "LEGACY CHECKPOINT schema=2. Validating model, packages, schedule, adapter tensors, "
+            "optimizer, scheduler, and RNG state."
+        )
     versions = (manifest.get("torch"), manifest.get("transformers"), manifest.get("peft"))
     current_versions = (torch.__version__, transformers.__version__, peft.__version__)
     if versions != current_versions:
         raise RuntimeError(f"Checkpoint stack {versions} differs from current stack {current_versions}")
-    actual_files = {str(path.relative_to(checkpoint)) for path in checkpoint.rglob("*") if path.is_file() and path.name != "manifest.json"}
+    # Check both membership and content. Hashing only known files would miss an
+    # unexpected payload inserted into the checkpoint directory.
+    actual_files = {
+        str(path.relative_to(checkpoint))
+        for path in checkpoint.rglob("*")
+        if path.is_file() and path.name != "manifest.json"
+    }
     if actual_files != set(manifest.get("files", {})):
         raise RuntimeError("Checkpoint file set changed")
     for relative, expected_hash in manifest["files"].items():
@@ -144,12 +173,19 @@ def load_checkpoint(model: Any, config: TrainingConfig, data: PreparedData) -> t
 
     state = json.loads((checkpoint / "state.json").read_text(encoding="utf-8"))
     position, prior_total, total = state.get("next_position"), state.get("total_updates"), len(data.schedule)
-    if state.get("schema_version") != manifest_schema or not isinstance(position, int) or not isinstance(prior_total, int) or not (0 <= position <= prior_total <= total):
+    if (
+        state.get("schema_version") != manifest_schema
+        or not isinstance(position, int)
+        or not isinstance(prior_total, int)
+        or not (0 <= position <= prior_total <= total)
+    ):
         raise RuntimeError("Invalid checkpoint position or schedule length")
     if state.get("source_run_number") != config.run_number:
         raise RuntimeError("Checkpoint belongs to another run number")
     if state.get("progress_hash") != prefix_progress_hash(data, position):
         raise RuntimeError("Checkpoint progress does not match the rebuilt batch order")
+    # Resumption accepts either the identical schedule or a prior run ending at
+    # a complete epoch boundary of the now-extended schedule.
     same_schedule = prior_total == total and manifest.get("schedule_sha256") == data.schedule_sha256
     completed_prefix = (
         0 < prior_total < total
@@ -173,7 +209,10 @@ def load_checkpoint(model: Any, config: TrainingConfig, data: PreparedData) -> t
     if not math.isclose(optimizer_lr, expected_lr, rel_tol=1e-5, abs_tol=1e-9):
         raise RuntimeError(f"Restored LR {optimizer_lr} differs from continuous schedule LR {expected_lr}")
     restore_rng(state["rng"])
-    print(f"RUN RESTORED next_step={position} target_step={total} optimizer_lr={optimizer_lr} optimizer_state_entries={len(optimizer.state)}")
+    print(
+        f"RUN RESTORED next_step={position} target_step={total} optimizer_lr={optimizer_lr} "
+        f"optimizer_state_entries={len(optimizer.state)}"
+    )
     print(f"SCHEDULE {'verified completed-epoch prefix' if completed_prefix else 'exact current schedule'}")
     return state, optimizer, scheduler
 

@@ -1,0 +1,12 @@
+# Validated by my-successful-notebooks/nemotron-fc-lora-v5-2-epochs.ipynb.
+# CUDA-tagged torch wheels are selected by the Kaggle wheel bundle or the
+# PyTorch cu128 index configured by scripts/run.py.
+torch==2.10.0
+transformers==5.5.0
+accelerate==1.15.0
+peft==0.21.0
+mamba-ssm==2.3.1
+causal-conv1d==1.6.1
+safetensors==0.8.0
+numpy==2.5.3
+matplotlib>=3.9,<4

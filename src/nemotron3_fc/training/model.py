@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import math
 import random
-from typing import Any, Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from nemotron3_fc.training.config import TrainingConfig
 from nemotron3_fc.training.encoding import EncodedWindow
@@ -29,26 +30,51 @@ def build_training_model(config: TrainingConfig) -> Any:
     from peft import get_peft_model
     from transformers import AutoModelForCausalLM
 
+    # Seed every RNG before allocating the base model or LoRA tensors.
     random.seed(config.seed)
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
     torch.cuda.manual_seed_all(config.seed)
-    base = AutoModelForCausalLM.from_pretrained(config.model_path, dtype=torch.bfloat16, trust_remote_code=True, local_files_only=True, device_map="cuda")
+    base = AutoModelForCausalLM.from_pretrained(
+        config.model_path,
+        dtype=torch.bfloat16,
+        trust_remote_code=True,
+        local_files_only=True,
+        device_map="cuda",
+    )
     base.config.use_cache = False
     base.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     base.enable_input_require_grads()
     lora = config.lora
-    adapted = get_peft_model(base, PeftLoraConfig(r=lora.rank, lora_alpha=lora.alpha, lora_dropout=lora.dropout, bias="none", target_modules=list(lora.target_modules), task_type="CAUSAL_LM"))
+    adapted = get_peft_model(
+        base,
+        PeftLoraConfig(
+            r=lora.rank,
+            lora_alpha=lora.alpha,
+            lora_dropout=lora.dropout,
+            bias="none",
+            target_modules=list(lora.target_modules),
+            task_type="CAUSAL_LM",
+        ),
+    )
+    # Coverage checks guard against silent architecture or PEFT naming changes.
     counts = {
-        target: sum(name.endswith("." + target) and hasattr(module, "lora_A") and "default" in module.lora_A for name, module in adapted.get_base_model().named_modules())
+        target: sum(
+            name.endswith("." + target) and hasattr(module, "lora_A") and "default" in module.lora_A
+            for name, module in adapted.get_base_model().named_modules()
+        )
         for target in lora.target_modules
     }
     trainable = sum(parameter.numel() for parameter in adapted.parameters() if parameter.requires_grad)
     print(f"LoRA module counts: {counts} | trainable parameters: {trainable}")
     if lora.expected_module_counts is not None and counts != dict(lora.expected_module_counts):
-        raise RuntimeError(f"LoRA module coverage changed: expected {dict(lora.expected_module_counts)}, found {counts}")
+        raise RuntimeError(
+            f"LoRA module coverage changed: expected {dict(lora.expected_module_counts)}, found {counts}"
+        )
     if lora.expected_trainable_parameters is not None and trainable != lora.expected_trainable_parameters:
-        raise RuntimeError(f"LoRA trainable parameter count changed: expected {lora.expected_trainable_parameters}, found {trainable}")
+        raise RuntimeError(
+            f"LoRA trainable parameter count changed: expected {lora.expected_trainable_parameters}, found {trainable}"
+        )
     return adapted
 
 
@@ -61,6 +87,7 @@ def collate_windows(windows: Sequence[EncodedWindow], indices: Sequence[int], pa
     input_ids = torch.full((len(selected), width), pad_id, dtype=torch.long)
     attention_mask = torch.zeros((len(selected), width), dtype=torch.long)
     labels = torch.full((len(selected), width), -100, dtype=torch.long)
+    # Labels use -100 on padding so PyTorch excludes it from causal-LM loss.
     for row, item in enumerate(selected):
         length = item.tokens
         input_ids[row, :length] = torch.tensor(item.input_ids, dtype=torch.long)
@@ -85,6 +112,7 @@ def verify_batch_loss_parity(model: Any, windows: Sequence[EncodedWindow], pad_i
 
     if len(windows) < 2:
         raise RuntimeError("At least two training windows are required for batch loss verification")
+    # Distinct sequence lengths exercise padding and loss masking.
     ordered = sorted(range(len(windows)), key=lambda index: windows[index].tokens)
     indices = (ordered[len(ordered) // 4], ordered[3 * len(ordered) // 4])
     prior_mode = model.training
@@ -105,7 +133,11 @@ def verify_batch_loss_parity(model: Any, windows: Sequence[EncodedWindow], pad_i
 
 
 def adapter_parameters(model: Any) -> dict[str, Any]:
-    return {name: parameter for name, parameter in model.named_parameters() if ".lora_A.default." in name or ".lora_B.default." in name}
+    return {
+        name: parameter
+        for name, parameter in model.named_parameters()
+        if ".lora_A.default." in name or ".lora_B.default." in name
+    }
 
 
 def snapshot_adapter(model: Any) -> dict[str, Any]:
@@ -125,22 +157,28 @@ def restore_adapter(model: Any, snapshot: Mapping[str, Any]) -> None:
 
 def load_exact_adapter(model: Any, weights_file: Any) -> int:
     """Map every safetensors LoRA tensor to exactly one live parameter."""
-    from safetensors import safe_open
     import torch
+    from safetensors import safe_open
 
     parameters, mapping = adapter_parameters(model), {}
     expected = set(parameters)
+    # PEFT versions disagree on whether `default` appears in serialized keys.
+    # Resolve each saved tensor explicitly and reject partial or ambiguous maps.
     with safe_open(str(weights_file), framework="pt", device="cpu") as saved:
-        for saved_key in saved.keys():
+        for saved_key in saved:
             marker = ".lora_A." if ".lora_A." in saved_key else (".lora_B." if ".lora_B." in saved_key else None)
             if marker is None:
                 raise RuntimeError(f"Unexpected adapter tensor: {saved_key}")
             renamed = saved_key.replace(marker, marker + "default.", 1)
-            matches = [name for name in (renamed, "base_model.model." + renamed, "base_model." + renamed) if name in expected]
+            matches = [
+                name for name in (renamed, "base_model.model." + renamed, "base_model." + renamed) if name in expected
+            ]
             if len(matches) != 1:
                 raise RuntimeError(f"Missing or ambiguous adapter target: {saved_key}")
             target = matches[0]
-            if target in mapping.values() or tuple(saved.get_slice(saved_key).get_shape()) != tuple(parameters[target].shape):
+            if target in mapping.values() or tuple(saved.get_slice(saved_key).get_shape()) != tuple(
+                parameters[target].shape
+            ):
                 raise RuntimeError(f"Duplicate or shape-mismatched tensor: {saved_key}")
             mapping[saved_key] = target
         if set(mapping.values()) != expected:
@@ -163,12 +201,21 @@ def new_optimizer_scheduler(model: Any, config: TrainingConfig) -> tuple[Any, An
     """Create fused AdamW and the checkpointable warmup-then-constant schedule."""
     import torch
 
-    optimizer = torch.optim.AdamW((parameter for parameter in model.parameters() if parameter.requires_grad), lr=config.learning_rate, weight_decay=config.weight_decay, fused=True)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: learning_rate_factor(step, config.warmup_steps))
+    optimizer = torch.optim.AdamW(
+        (parameter for parameter in model.parameters() if parameter.requires_grad),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay,
+        fused=True,
+    )
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer, lr_lambda=lambda step: learning_rate_factor(step, config.warmup_steps)
+    )
     return optimizer, scheduler
 
 
-def accumulate_microbatch(model: Any, windows: Sequence[EncodedWindow], indices: Sequence[int], pad_id: int, total_supervised: int) -> tuple[float, int]:
+def accumulate_microbatch(
+    model: Any, windows: Sequence[EncodedWindow], indices: Sequence[int], pad_id: int, total_supervised: int
+) -> tuple[float, int]:
     batch = collate_windows(windows, indices, pad_id)
     padded_tokens = batch["input_ids"].numel()
     batch = {key: value.to("cuda") for key, value in batch.items()}
@@ -185,16 +232,27 @@ def accumulate_microbatch(model: Any, windows: Sequence[EncodedWindow], indices:
     return loss_value * fraction, padded_tokens
 
 
-def train_one_step(model: Any, windows: Sequence[EncodedWindow], indices: Sequence[int], pad_id: int, total_supervised: int, optimizer: Any, scheduler: Any, gradient_clip: float) -> dict[str, Any]:
+def train_one_step(
+    model: Any,
+    windows: Sequence[EncodedWindow],
+    indices: Sequence[int],
+    pad_id: int,
+    total_supervised: int,
+    optimizer: Any,
+    scheduler: Any,
+    gradient_clip: float,
+) -> dict[str, Any]:
     """Train one scheduled batch, reducing only its microbatch size after CUDA OOM."""
     import gc
     import time
+
     import torch
 
     model.set_adapter("default")
     model.train()
     micro_limit = len(indices)
     started = time.monotonic()
+    # Microbatch retries are permitted only before optimizer mutation.
     while True:
         optimizer.zero_grad(set_to_none=True)
         optimizer_started = False
@@ -205,7 +263,11 @@ def train_one_step(model: Any, windows: Sequence[EncodedWindow], indices: Sequen
                 part_loss, part_padded = accumulate_microbatch(model, windows, chunk, pad_id, total_supervised)
                 weighted_loss += part_loss
                 padded_tokens += part_padded
-            grad_norm = torch.nn.utils.clip_grad_norm_((parameter for parameter in model.parameters() if parameter.requires_grad), gradient_clip, error_if_nonfinite=True)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                (parameter for parameter in model.parameters() if parameter.requires_grad),
+                gradient_clip,
+                error_if_nonfinite=True,
+            )
             optimizer_started = True
             optimizer.step()
             scheduler.step()

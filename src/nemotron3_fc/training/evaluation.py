@@ -6,15 +6,15 @@ import gc
 import json
 import math
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from nemotron3_fc.data.io import sha256_file, write_json
 from nemotron3_fc.training.checkpoint import capture_rng, restore_rng
 from nemotron3_fc.training.config import TrainingConfig
 from nemotron3_fc.training.data import PreparedData
-from nemotron3_fc.training.encoding import EncodedWindow
 from nemotron3_fc.training.model import gpu_batch, load_exact_adapter, restore_adapter, snapshot_adapter
 
 
@@ -38,10 +38,16 @@ def evaluate_model(model: Any, data: PreparedData, config: TrainingConfig, posit
         raise ValueError(f"Unknown validation scope: {scope}")
     items = data.validation_monitor if scope == "monitor" else data.validation_full
     expected_counts = data.monitor_record_counts if scope == "monitor" else data.full_record_counts
-    actual_counts = {source: len({item.record_id for item in items if item.source == source}) for source in expected_counts}
+    actual_counts = {
+        source: len({item.record_id for item in items if item.source == source}) for source in expected_counts
+    }
     if actual_counts != dict(expected_counts):
-        raise RuntimeError(f"{scope} validation record counts differ: expected={dict(expected_counts)}, actual={actual_counts}")
+        raise RuntimeError(
+            f"{scope} validation record counts differ: expected={dict(expected_counts)}, actual={actual_counts}"
+        )
 
+    # Validation must not consume dropout/random state that a resumed training
+    # run would otherwise use for its next optimizer update.
     previous_mode, rng_state = model.training, capture_rng()
     model.eval()
     metric_names = []
@@ -85,7 +91,11 @@ def evaluate_model(model: Any, data: PreparedData, config: TrainingConfig, posit
     # an unavailable metric would artificially lower the selection score.
     available = {name: result[name] for name in config.best_score_weights if result.get(name) is not None}
     denominator = sum(config.best_score_weights[name] for name in available)
-    result["score"] = sum(config.best_score_weights[name] * value for name, value in available.items()) / denominator if denominator else None
+    result["score"] = (
+        sum(config.best_score_weights[name] * value for name, value in available.items()) / denominator
+        if denominator
+        else None
+    )
     if result["score"] is None:
         raise RuntimeError(f"{scope} validation produced no selection score")
     visible = {key: value for key, value in result.items() if key != "validation_tokens"}
@@ -118,8 +128,12 @@ def previous_best_state(config: TrainingConfig) -> BestState:
     return result
 
 
-def revalidate_previous_best(model: Any, best: BestState, data: PreparedData, config: TrainingConfig) -> tuple[BestState, dict[str, Any] | None]:
+def revalidate_previous_best(
+    model: Any, best: BestState, data: PreparedData, config: TrainingConfig
+) -> tuple[BestState, dict[str, Any] | None]:
     """Evaluate a legacy/non-full best on the current full split, then restore latest weights."""
+    # Legacy or provisional selections are not comparable to full-split epoch
+    # scores until they are measured on the same validation scope.
     if best.source is None or best.validation_scope == "full":
         return best, None
     latest = snapshot_adapter(model)
@@ -137,11 +151,20 @@ def revalidate_previous_best(model: Any, best: BestState, data: PreparedData, co
     return best, validation
 
 
-def consider_best(model: Any, best: BestState, validation: Mapping[str, Any], *, completed_epoch: int | None = None, epoch_metrics: Mapping[str, Any] | None = None) -> BestState:
+def consider_best(
+    model: Any,
+    best: BestState,
+    validation: Mapping[str, Any],
+    *,
+    completed_epoch: int | None = None,
+    epoch_metrics: Mapping[str, Any] | None = None,
+) -> BestState:
     """Select completed epochs using full validation; monitor results remain provisional."""
     score, step = float(validation["score"]), int(validation["step"])
     if step == 0:
         return best
+    # Once any complete epoch exists, periodic monitor improvements may not
+    # displace it because monitor and full-split scores have different support.
     if completed_epoch is not None:
         if validation["scope"] != "full":
             raise RuntimeError("A completed epoch requires full validation")
@@ -163,7 +186,10 @@ def consider_best(model: Any, best: BestState, validation: Mapping[str, Any], *,
         metrics=epoch_metrics if completed_epoch is not None else {"validation": dict(validation)},
         validation_scope=str(validation["scope"]),
     )
-    print(f"NEW BEST kind={result.kind} epoch={result.epoch} step={result.step} score={result.score:.6f} scope={result.validation_scope}")
+    print(
+        f"NEW BEST kind={result.kind} epoch={result.epoch} step={result.step} "
+        f"score={result.score:.6f} scope={result.validation_scope}"
+    )
     gc.collect()
     return result
 
@@ -176,6 +202,8 @@ def export_best_adapter(model: Any, best: BestState, config: TrainingConfig, dat
     output = config.output_dir / "best-adapter"
     if output.exists():
         raise FileExistsError(f"Best-adapter output already exists: {output}")
+    # Temporarily swap only LoRA tensors; the large base model remains resident
+    # and unchanged throughout export.
     if best.snapshot is not None:
         latest = snapshot_adapter(model)
         try:
@@ -201,5 +229,8 @@ def export_best_adapter(model: Any, best: BestState, config: TrainingConfig, dat
     }
     write_json(output / "best-metadata.json", metadata)
     weights = output / "adapter_model.safetensors"
-    print(f"BEST ADAPTER kind={best.kind} epoch={best.epoch} scope={best.validation_scope} score={best.score} SHA-256={sha256_file(weights)}")
+    print(
+        f"BEST ADAPTER kind={best.kind} epoch={best.epoch} scope={best.validation_scope} "
+        f"score={best.score} SHA-256={sha256_file(weights)}"
+    )
     return output

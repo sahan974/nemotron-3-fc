@@ -6,15 +6,29 @@ import json
 import math
 import shutil
 import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from nemotron3_fc.data.io import read_jsonl, write_json
 from nemotron3_fc.training.checkpoint import initial_progress_hash, load_checkpoint, save_checkpoint
 from nemotron3_fc.training.config import TrainingConfig
 from nemotron3_fc.training.data import PreparedData, advance_progress_hash, prepare_data
-from nemotron3_fc.training.evaluation import BestState, consider_best, evaluate_model, export_best_adapter, previous_best_state, revalidate_previous_best
-from nemotron3_fc.training.model import build_training_model, load_tokenizer, new_optimizer_scheduler, train_one_step, verify_batch_loss_parity
+from nemotron3_fc.training.evaluation import (
+    BestState,
+    consider_best,
+    evaluate_model,
+    export_best_adapter,
+    previous_best_state,
+    revalidate_previous_best,
+)
+from nemotron3_fc.training.model import (
+    build_training_model,
+    load_tokenizer,
+    new_optimizer_scheduler,
+    train_one_step,
+    verify_batch_loss_parity,
+)
 from nemotron3_fc.training.report import create_training_report
 
 
@@ -22,6 +36,8 @@ def run_training(config: TrainingConfig) -> dict[str, Any]:
     """Validate inputs, build the deterministic schedule, and execute one training session."""
     session_started = time.monotonic()
     _verify_runtime_and_inputs(config)
+    # Prepare and validate all deterministic inputs before building optimizer
+    # state or entering the resumable training loop.
     tokenizer = load_tokenizer(config)
     data = prepare_data(config, tokenizer)
     model = build_training_model(config)
@@ -72,36 +88,51 @@ def _verify_runtime_and_inputs(config: TrainingConfig) -> None:
         missing = [str(path) for path in required if not path.is_file()]
         if missing:
             raise FileNotFoundError(f"Resume artifacts are incomplete: {missing}")
+
+    gpu_name = torch.cuda.get_device_name(0)
+    gpu_memory_gib = torch.cuda.get_device_properties(0).total_memory / 1024**3
+
     print(f"RUNTIME torch={torch.__version__} transformers={transformers.__version__} peft={peft.__version__}")
-    print(f"GPU name={torch.cuda.get_device_name(0)} vram_gib={torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f}")
-    print(f"TRAINING mode={config.mode} epochs={config.epochs} warmup_steps={config.warmup_steps} constant_lr={config.learning_rate}")
+    print(f"GPU name={gpu_name} vram_gib={gpu_memory_gib:.2f}")
+    print(
+        f"TRAINING mode={config.mode} epochs={config.epochs} "
+        f"warmup_steps={config.warmup_steps} constant_lr={config.learning_rate}"
+    )
     print(f"OUTPUT {config.output_dir}")
 
 
-def _run_session(model: Any, tokenizer: Any, data: PreparedData, config: TrainingConfig, session_started: float) -> dict[str, Any]:
+def _run_session(
+    model: Any, tokenizer: Any, data: PreparedData, config: TrainingConfig, session_started: float
+) -> dict[str, Any]:
     import torch
 
+    # Initialize the output and continuation state before touching model weights.
     config.output_dir.parent.mkdir(parents=True, exist_ok=True)
     free_gib = shutil.disk_usage(config.output_dir.parent).free / 1024**3
     if free_gib < config.minimum_free_disk_gib:
         raise OSError(f"Only {free_gib:.2f} GiB free before training; checkpoint replacement is unsafe")
     config.output_dir.mkdir(parents=True, exist_ok=False)
-    write_json(config.output_dir / "run-manifest.json", {
-        "schema_version": 3,
-        "mode": config.mode,
-        "run_number": config.run_number,
-        "start_from": config.start_from,
-        "epochs": config.epochs,
-        "total_updates": len(data.schedule),
-        "data_counts": data.counts,
-        "dataset_identities": data.dataset_identities,
-        "schedule_sha256": data.schedule_sha256,
-        "training_identity_sha256": config.identity_sha256(),
-        "model_path": str(config.model_path),
-        "torch": torch.__version__,
-        "config": config.identity(),
-    })
+    write_json(
+        config.output_dir / "run-manifest.json",
+        {
+            "schema_version": 3,
+            "mode": config.mode,
+            "run_number": config.run_number,
+            "start_from": config.start_from,
+            "epochs": config.epochs,
+            "total_updates": len(data.schedule),
+            "data_counts": data.counts,
+            "dataset_identities": data.dataset_identities,
+            "schedule_sha256": data.schedule_sha256,
+            "training_identity_sha256": config.identity_sha256(),
+            "model_path": str(config.model_path),
+            "torch": torch.__version__,
+            "config": config.identity(),
+        },
+    )
 
+    # Optimizer and schedule are created fresh, then replaced atomically with
+    # checkpoint state when this is a continuation run.
     best = previous_best_state(config)
     optimizer, scheduler = new_optimizer_scheduler(model, config)
     position, tokens_processed = 0, 0
@@ -120,7 +151,8 @@ def _run_session(model: Any, tokenizer: Any, data: PreparedData, config: Trainin
     checkpoint: Path | None = None
     status = "running"
     torch.cuda.reset_peak_memory_stats()
-    print(f"SESSION start_step={position} total={len(data.schedule)} elapsed_minutes={(time.monotonic() - session_started) / 60:.1f}")
+    elapsed_minutes = (time.monotonic() - session_started) / 60
+    print(f"SESSION start_step={position} total={len(data.schedule)} elapsed_minutes={elapsed_minutes:.1f}")
 
     best, prior_full = revalidate_previous_best(model, best, data, config)
     if prior_full is not None:
@@ -130,15 +162,28 @@ def _run_session(model: Any, tokenizer: Any, data: PreparedData, config: Trainin
     _append_jsonl(validation_file, initial_validation)
     last_validation_step = position
 
+    # Train, validate, and checkpoint only at complete optimizer step boundaries.
     for index in range(position, len(data.schedule)):
-        if config.stop_after_session_seconds is not None and time.monotonic() - session_started >= config.stop_after_session_seconds:
+        if (
+            config.stop_after_session_seconds is not None
+            and time.monotonic() - session_started >= config.stop_after_session_seconds
+        ):
             status = "session_time_limit"
             print(f"SESSION STOP safe_step_boundary={index}")
             break
         epoch_index, item_index = data.schedule[index]
         item = data.batch_items[item_index]
         try:
-            trained = train_one_step(model, data.training_windows, item.indices, _pad_id(tokenizer), item.supervised, optimizer, scheduler, config.gradient_clip)
+            trained = train_one_step(
+                model,
+                data.training_windows,
+                item.indices,
+                _pad_id(tokenizer),
+                item.supervised,
+                optimizer,
+                scheduler,
+                config.gradient_clip,
+            )
         except Exception as error:
             status = "training_error"
             print(f"TRAINING STOP step={index} error={error!r}")
@@ -165,6 +210,8 @@ def _run_session(model: Any, tokenizer: Any, data: PreparedData, config: Trainin
 
         # Full validation is an epoch-boundary operation; periodic monitoring is
         # used only between completed epochs.
+        # Schedule entries carry their epoch, so boundaries remain correct even
+        # when different length packing changes updates per epoch.
         epoch_end = position == len(data.schedule) or data.schedule[position][0] != data.schedule[position - 1][0]
         periodic_validation = position % config.validate_every == 0
         if periodic_validation:
@@ -183,7 +230,17 @@ def _run_session(model: Any, tokenizer: Any, data: PreparedData, config: Trainin
             best = consider_best(model, best, full, completed_epoch=completed_epoch, epoch_metrics=epoch_metrics)
         if epoch_end or position % config.checkpoint_every == 0:
             try:
-                checkpoint = save_checkpoint(model=model, optimizer=optimizer, scheduler=scheduler, config=config, data=data, position=position, tokens_processed=tokens_processed, progress_hash=progress_hash, best_score=best.score)
+                checkpoint = save_checkpoint(
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    config=config,
+                    data=data,
+                    position=position,
+                    tokens_processed=tokens_processed,
+                    progress_hash=progress_hash,
+                    best_score=best.score,
+                )
             except Exception as error:
                 status = "checkpoint_error"
                 print(f"CHECKPOINT STOP error={error!r}; previous complete checkpoint retained")
@@ -191,6 +248,7 @@ def _run_session(model: Any, tokenizer: Any, data: PreparedData, config: Trainin
     else:
         status = "completed"
 
+    # Preserve the latest recoverable state even when the session stops early.
     if recent:
         _print_training_window(recent, position, len(data.schedule))
     if status not in {"training_error", "checkpoint_error"} and position > 0:
@@ -200,11 +258,22 @@ def _run_session(model: Any, tokenizer: Any, data: PreparedData, config: Trainin
             best = consider_best(model, best, monitor)
         if checkpoint is None or checkpoint.name != f"checkpoint-step-{position:06d}":
             try:
-                checkpoint = save_checkpoint(model=model, optimizer=optimizer, scheduler=scheduler, config=config, data=data, position=position, tokens_processed=tokens_processed, progress_hash=progress_hash, best_score=best.score)
+                checkpoint = save_checkpoint(
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    config=config,
+                    data=data,
+                    position=position,
+                    tokens_processed=tokens_processed,
+                    progress_hash=progress_hash,
+                    best_score=best.score,
+                )
             except Exception as error:
                 status = "checkpoint_error"
                 print(f"FINAL CHECKPOINT FAILED error={error!r}")
 
+    # Export is attempted only after a recoverable working checkpoint exists.
     best_output = None
     if checkpoint is not None and status != "checkpoint_error":
         try:
@@ -212,6 +281,8 @@ def _run_session(model: Any, tokenizer: Any, data: PreparedData, config: Trainin
         except Exception as error:
             status = "best_export_error"
             print(f"BEST EXPORT FAILED error={error!r}; checkpoint remains available")
+
+    # Write one compact machine readable summary after every exit path.
     summary = {
         "status": status,
         "mode": config.mode,
@@ -255,6 +326,8 @@ def _carry_forward_metrics(previous_checkpoint: Path, output_dir: Path, position
         ("validation.jsonl", lambda row: row["step"] <= position),
         ("epoch-summary.jsonl", lambda row: row["end_step"] <= position),
     )
+    # Truncate each history according to its own step semantics. This excludes
+    # measurements produced after the checkpoint being resumed.
     for filename, keep in rules:
         source, target = previous_run / filename, output_dir / filename
         if not source.is_file():
@@ -289,13 +362,16 @@ def _print_training_window(records: list[Mapping[str, Any]], position: int, tota
     }
     try:
         import torch
+
         report["peak_gpu_gib"] = round(torch.cuda.max_memory_allocated() / 1024**3, 2)
     except ImportError:
         report["peak_gpu_gib"] = None
     print(f"TRAIN {json.dumps(report)}")
 
 
-def _summarize_completed_epoch(epoch: int, metrics_file: Path, validation: Mapping[str, Any], data: PreparedData) -> dict[str, Any]:
+def _summarize_completed_epoch(
+    epoch: int, metrics_file: Path, validation: Mapping[str, Any], data: PreparedData
+) -> dict[str, Any]:
     """Aggregate every update in an epoch and attach its full validation result."""
     import torch
 
@@ -334,7 +410,14 @@ def _summarize_completed_epoch(epoch: int, metrics_file: Path, validation: Mappi
         "validation": dict(validation),
         "selection_score": validation["score"],
     }
-    print(f"EPOCH COMPLETE {json.dumps({'epoch': epoch, 'windows': result['training_windows'], 'updates': result['updates'], 'train_loss': result['train_loss'], 'full_validation_score': result['selection_score']})}")
+    visible = {
+        "epoch": epoch,
+        "windows": result["training_windows"],
+        "updates": result["updates"],
+        "train_loss": result["train_loss"],
+        "full_validation_score": result["selection_score"],
+    }
+    print(f"EPOCH COMPLETE {json.dumps(visible)}")
     return result
 
 

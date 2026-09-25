@@ -36,7 +36,10 @@ def inspect_dataset(adapter_name: str, path: Path) -> int:
             if message.role == "assistant":
                 assistant_turns += 1
                 tool_call_turns += bool(message.tool_calls)
-    print(f"adapter={adapter_name} raw={len(raw_records)} records={records} rejected={rejected} assistant_turns={assistant_turns} tool_call_turns={tool_call_turns}")
+    print(
+        f"adapter={adapter_name} raw={len(raw_records)} records={records} rejected={rejected} "
+        f"assistant_turns={assistant_turns} tool_call_turns={tool_call_turns}"
+    )
     return 0
 
 
@@ -57,6 +60,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    # Keep heavy GPU stacks out of lightweight data commands. Imports happen
+    # only after argparse has selected training or evaluation.
     if args.command == "inspect-dataset":
         return inspect_dataset(args.adapter, args.path)
     if args.command == "prepare-data":
@@ -66,8 +72,8 @@ def main(argv: list[str] | None = None) -> int:
         from nemotron3_fc.training.config import load_training_config
         from nemotron3_fc.training.trainer import run_training
 
-        run_training(load_training_config(args.config))
-        return 0
+        summary = run_training(load_training_config(args.config))
+        return 0 if summary["status"] in {"completed", "session_time_limit"} else 1
     if args.command == "evaluate":
         from nemotron3_fc.evaluation.config import load_evaluation_config
         from nemotron3_fc.evaluation.runner import run_evaluation

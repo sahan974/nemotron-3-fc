@@ -1,0 +1,63 @@
+{
+  "cache_root": ".artifacts",
+  "artifacts": {
+    "toolace-source": {
+      "kind": "dataset",
+      "handle": "sahangunasekara92/nemotron-3-fc-toolace-source",
+      "mounted_path": "/kaggle/input/datasets/sahangunasekara92/nemotron-3-fc-toolace-source",
+      "cache_path": "sources/toolace",
+      "required": ["source/data.json"]
+    },
+    "xlam-source": {
+      "kind": "dataset",
+      "handle": "sahangunasekara92/nemotron-3-fc-xlam-60k-source",
+      "mounted_path": "/kaggle/input/datasets/sahangunasekara92/nemotron-3-fc-xlam-60k-source",
+      "cache_path": "sources/xlam",
+      "required": ["source/xlam_function_calling_60k.json"]
+    },
+    "model": {
+      "kind": "model",
+      "handle": "metric/nemotron-3-nano-30b-a3b-bf16/Transformers/default/1",
+      "mounted_path": "/kaggle/input/models/metric/nemotron-3-nano-30b-a3b-bf16/transformers/default/1",
+      "cache_path": "model/nemotron-3-nano-30b-a3b-bf16",
+      "required": ["config.json", "*.safetensors"]
+    },
+    "toolace": {
+      "kind": "dataset",
+      "handle": "sahangunasekara92/nemotron-3-fc-toolace-split-v2",
+      "mounted_path": "/kaggle/input/datasets/sahangunasekara92/nemotron-3-fc-toolace-split-v2",
+      "cache_path": "datasets/toolace-split-v2",
+      "required": ["train.jsonl", "validation.jsonl", "test.jsonl", "manifest.json"]
+    },
+    "xlam": {
+      "kind": "dataset",
+      "handle": "sahangunasekara92/nemotron-3-fc-xlam-split-v2",
+      "mounted_path": "/kaggle/input/datasets/sahangunasekara92/nemotron-3-fc-xlam-split-v2",
+      "cache_path": "datasets/xlam-split-v2",
+      "required": ["train.jsonl", "validation.jsonl", "test.jsonl", "manifest.json"]
+    },
+    "training-wheels": {
+      "kind": "dataset",
+      "handle": "sahangunasekara92/nemotron-3-fc-training-wheels-cu128-py312",
+      "mounted_path": "/kaggle/input/datasets/sahangunasekara92/nemotron-3-fc-training-wheels-cu128-py312",
+      "cache_path": "wheels/training",
+      "expand_zip": true,
+      "required": ["**/*.whl"]
+    },
+    "serving-wheels": {
+      "kind": "dataset",
+      "handle": "sahangunasekara92/nemotron-3-fc-vllm-0180-cu128-wheels-v2",
+      "mounted_path": "/kaggle/input/datasets/sahangunasekara92/nemotron-3-fc-vllm-0180-cu128-wheels-v2",
+      "cache_path": "wheels/serving",
+      "expand_zip": true,
+      "required": ["**/*.whl"]
+    },
+    "two-epoch-training-output": {
+      "kind": "notebook-output",
+      "handle": "lakshitha323/nemotron-fc-lora-v5-2-epochs",
+      "mounted_path": "/kaggle/input/notebooks/lakshitha323/nemotron-fc-lora-v5-2-epochs",
+      "cache_path": "runs/nemotron-fc-lora-v5-2-epochs",
+      "required": ["**/summary.json", "**/best-adapter/adapter_model.safetensors", "**/checkpoints/checkpoint-step-006808/adapter/adapter_model.safetensors"]
+    }
+  }
+}

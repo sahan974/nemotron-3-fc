@@ -13,7 +13,17 @@ def _config(tmp_path: Path) -> dict:
         "mode": "full",
         "epochs": 2,
         "best_score_weights": {"toolace": 0.8, "toolace:no_call": 0.2},
-        "datasets": [{"name": "toolace", "root": "data", "train": True, "evaluate": True, "expected_train_records": 10, "expected_validation_records": 4, "monitor_validation_records": 2}],
+        "datasets": [
+            {
+                "name": "toolace",
+                "root": "data",
+                "train": True,
+                "evaluate": True,
+                "expected_train_records": 10,
+                "expected_validation_records": 4,
+                "monitor_validation_records": 2,
+            }
+        ],
         "lora": {"rank": 16, "alpha": 32, "target_modules": ["q_proj"]},
     }
 

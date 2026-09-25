@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class EncodedWindow:
 def template_messages(row: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Convert structured tool results to the string form expected by chat templates."""
     messages = []
+    # Message copies preserve loaded records for subsequent evaluation use.
     for message in row["messages"]:
         item = dict(message)
         if item["role"] == "tool" and not isinstance(item.get("content"), str):
@@ -32,7 +34,13 @@ def template_messages(row: Mapping[str, Any]) -> list[dict[str, Any]]:
     return messages
 
 
-def render_chat(tokenizer: Any, messages: Sequence[Mapping[str, Any]], tools: Sequence[Mapping[str, Any]], *, add_generation_prompt: bool = False) -> str:
+def render_chat(
+    tokenizer: Any,
+    messages: Sequence[Mapping[str, Any]],
+    tools: Sequence[Mapping[str, Any]],
+    *,
+    add_generation_prompt: bool = False,
+) -> str:
     return tokenizer.apply_chat_template(
         list(messages),
         tools=list(tools),
@@ -52,6 +60,8 @@ def encode_record(row: Mapping[str, Any], tokenizer: Any) -> tuple[list[int], li
     if len(ids) != len(offsets):
         raise ValueError(f"Tokenizer ID/offset length mismatch: {row['id']}")
     spans = []
+    # Re-render prefixes with the model's native template to locate assistant
+    # spans without guessing special-token boundaries.
     for index, message in enumerate(messages):
         if message["role"] != "assistant":
             continue
@@ -71,7 +81,9 @@ def encode_record(row: Mapping[str, Any], tokenizer: Any) -> tuple[list[int], li
     return ids, labels, messages
 
 
-def record_windows(row: Mapping[str, Any], source: str, tokenizer: Any, *, max_tokens: int, overlap_tokens: int) -> list[EncodedWindow]:
+def record_windows(
+    row: Mapping[str, Any], source: str, tokenizer: Any, *, max_tokens: int, overlap_tokens: int
+) -> list[EncodedWindow]:
     """Window over-length records while supervising every assistant token exactly once."""
     ids, labels, messages = encode_record(row, tokenizer)
     windows: list[EncodedWindow] = []
@@ -89,22 +101,26 @@ def record_windows(row: Mapping[str, Any], source: str, tokenizer: Any, *, max_t
         local_labels[0] = -100
         supervised = sum(value != -100 for value in local_labels)
         if supervised:
-            windows.append(EncodedWindow(
-                source=source,
-                record_id=str(row["id"]),
-                id=f"{row['id']}#w{len(windows)}",
-                input_ids=tuple(ids[start:end]),
-                labels=tuple(local_labels),
-                tokens=end - start,
-                supervised=supervised,
-                no_call=no_call,
-                multi_turn=multi_turn,
-                has_tool_result=has_tool_result,
-            ))
+            windows.append(
+                EncodedWindow(
+                    source=source,
+                    record_id=str(row["id"]),
+                    id=f"{row['id']}#w{len(windows)}",
+                    input_ids=tuple(ids[start:end]),
+                    labels=tuple(local_labels),
+                    tokens=end - start,
+                    supervised=supervised,
+                    no_call=no_call,
+                    multi_turn=multi_turn,
+                    has_tool_result=has_tool_result,
+                )
+            )
         previous_end = end
         if end == len(ids):
             break
         start = end - overlap_tokens
+    # The first token in every causal sequence has no preceding prediction
+    # context, so coverage intentionally excludes it.
     expected = sum(value != -100 for value in labels[1:])
     actual = sum(window.supervised for window in windows)
     if not windows or actual != expected:

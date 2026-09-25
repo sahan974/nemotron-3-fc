@@ -22,7 +22,10 @@ class CharacterTokenizer:
 
     def __call__(self, text, add_special_tokens, return_offsets_mapping):
         assert not add_special_tokens and return_offsets_mapping
-        return {"input_ids": [ord(character) for character in text], "offset_mapping": [(index, index + 1) for index in range(len(text))]}
+        return {
+            "input_ids": [ord(character) for character in text],
+            "offset_mapping": [(index, index + 1) for index in range(len(text))],
+        }
 
 
 def _row():
