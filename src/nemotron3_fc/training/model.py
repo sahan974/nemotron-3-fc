@@ -165,7 +165,8 @@ def load_exact_adapter(model: Any, weights_file: Any) -> int:
     # PEFT versions disagree on whether `default` appears in serialized keys.
     # Resolve each saved tensor explicitly and reject partial or ambiguous maps.
     with safe_open(str(weights_file), framework="pt", device="cpu") as saved:
-        for saved_key in saved:
+        # safe_open provides a keys() view but does not implement Python iteration.
+        for saved_key in saved.keys():  # noqa: SIM118
             marker = ".lora_A." if ".lora_A." in saved_key else (".lora_B." if ".lora_B." in saved_key else None)
             if marker is None:
                 raise RuntimeError(f"Unexpected adapter tensor: {saved_key}")
