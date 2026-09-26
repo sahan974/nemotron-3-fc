@@ -1,0 +1,26 @@
+{
+  "model_path": "artifact://model",
+  "dataset_root": "artifact://toolace",
+  "split": "test",
+  "output_dir": "../outputs/nemotron-fc-epoch-test",
+  "adapters": [
+    {
+      "name": "epoch-1",
+      "path": "artifact://two-epoch-training-output/nemotron-3-fc-toolace-warmup-constant-run-01/best-adapter",
+      "step": 3404
+    },
+    {
+      "name": "epoch-2",
+      "path": "artifact://two-epoch-training-output/nemotron-3-fc-toolace-warmup-constant-run-01/checkpoints/checkpoint-step-006808/adapter",
+      "step": 6808
+    }
+  ],
+  "expected_records": 1077,
+  "batch_size": 16,
+  "max_new_tokens": 1024,
+  "gpu_memory_utilization": 0.85,
+  "max_lora_rank": 16,
+  "session_limit_seconds": 36000,
+  "previous_results_dir": null,
+  "probe": true
+}

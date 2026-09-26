@@ -18,6 +18,8 @@ def read_jsonl(path: Path):
 
 def template_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result = []
+    # Chat templates require textual tool results. Work on copies so the loaded
+    # reference records remain unchanged for scoring and export.
     for message in messages:
         item = dict(message)
         if item["role"] == "tool" and not isinstance(item.get("content"), str):
@@ -26,11 +28,15 @@ def template_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def prepare_tasks(tokenizer: Any, dataset_root: Path, split: str, expected_records: int | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def prepare_tasks(
+    tokenizer: Any, dataset_root: Path, split: str, expected_records: int | None = None
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Create one prompt per assistant turn from its recorded preceding history."""
     source = dataset_root / f"{split}.jsonl"
     digest = sha256_file(source)
     manifest_path = dataset_root / "manifest.json"
+    # When a preparation manifest is available, validate both bytes and record
+    # count before constructing prompts.
     if manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         entry = manifest.get("files", {}).get(source.name)
@@ -48,23 +54,56 @@ def prepare_tasks(tokenizer: Any, dataset_root: Path, split: str, expected_recor
     if len({row["id"] for row in records}) != len(records):
         raise RuntimeError("Duplicate record IDs in evaluation split")
     tasks = []
+    # Each assistant turn becomes an independent task containing only preceding history.
     for record_index, row in enumerate(records):
         messages = template_messages(row["messages"])
         count = 0
         for message_index, message in enumerate(messages):
             if message["role"] != "assistant":
                 continue
-            kwargs = {"tools": row["tools"], "tokenize": False, "enable_thinking": False, "truncate_history_thinking": False}
+            kwargs = {
+                "tools": row["tools"],
+                "tokenize": False,
+                "enable_thinking": False,
+                "truncate_history_thinking": False,
+            }
+            # Prefix subtraction extracts the exact native reference rendering
+            # without manually reproducing Nemotron control tokens.
             prefix = tokenizer.apply_chat_template(messages[:message_index], add_generation_prompt=True, **kwargs)
-            through = tokenizer.apply_chat_template(messages[:message_index + 1], **kwargs)
+            through = tokenizer.apply_chat_template(messages[: message_index + 1], **kwargs)
             if not through.startswith(prefix):
                 raise RuntimeError(f"Native assistant boundary mismatch: {row['id']} at message {message_index}")
             prompt_ids = tokenizer(prefix, add_special_tokens=False)["input_ids"]
             if not prompt_ids:
                 raise RuntimeError(f"Empty inference prompt: {row['id']}")
-            tasks.append({"task_id": f"{record_index}:{message_index}", "record_id": row["id"], "record_index": record_index, "message_index": message_index, "history": messages[:message_index], "tools": row["tools"], "reference_message": message, "reference_text": through[len(prefix):], "prompt_text": prefix, "prompt_ids": prompt_ids, "multi_turn": sum(item["role"] == "user" for item in messages) > 1, "has_tool_result": any(item["role"] == "tool" for item in messages), "expected_call": bool(message.get("tool_calls"))})
+            tasks.append(
+                {
+                    "task_id": f"{record_index}:{message_index}",
+                    "record_id": row["id"],
+                    "record_index": record_index,
+                    "message_index": message_index,
+                    "history": messages[:message_index],
+                    "tools": row["tools"],
+                    "reference_message": message,
+                    "reference_text": through[len(prefix) :],
+                    "prompt_text": prefix,
+                    "prompt_ids": prompt_ids,
+                    "multi_turn": sum(item["role"] == "user" for item in messages) > 1,
+                    "has_tool_result": any(item["role"] == "tool" for item in messages),
+                    "expected_call": bool(message.get("tool_calls")),
+                }
+            )
             count += 1
         if not count:
             raise RuntimeError(f"Evaluation record has no assistant turn: {row['id']}")
-    info = {"records": len(records), "assistant_turns": len(tasks), "split_sha256": digest, "evaluation_protocol": "assistant_turn_generation_with_reference_history", "max_prompt_tokens": max(len(task["prompt_ids"]) for task in tasks), "call_turns": sum(task["expected_call"] for task in tasks), "no_call_turns": sum(not task["expected_call"] for task in tasks), "multi_turn_records": sum(sum(message["role"] == "user" for message in row["messages"]) > 1 for row in records)}
+    info = {
+        "records": len(records),
+        "assistant_turns": len(tasks),
+        "split_sha256": digest,
+        "evaluation_protocol": "assistant_turn_generation_with_reference_history",
+        "max_prompt_tokens": max(len(task["prompt_ids"]) for task in tasks),
+        "call_turns": sum(task["expected_call"] for task in tasks),
+        "no_call_turns": sum(not task["expected_call"] for task in tasks),
+        "multi_turn_records": sum(sum(message["role"] == "user" for message in row["messages"]) > 1 for row in records),
+    }
     return tasks, info

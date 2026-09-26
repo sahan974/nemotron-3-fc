@@ -1,0 +1,7 @@
+# Validated vLLM runtime. Keep this environment separate from training because
+# it intentionally uses Transformers 4.57.6 instead of Transformers 5.5.0.
+torch==2.10.0
+torchaudio==2.10.0
+torchvision==0.25.0
+transformers==4.57.6
+vllm==0.18.0
