@@ -1,46 +1,112 @@
 # Nemotron 3 FC
 
-Nemotron 3 FC provides tool-calling dataset preparation, BF16 LoRA training, checkpointed resumption, deterministic evaluation, and vLLM serving for Nemotron-3-Nano-30B-A3B-BF16.
+Nemotron 3 FC is a Python project for preparing function calling data, training
+LoRA adapters for Nemotron 3 Nano 30B A3B BF16, and evaluating trained adapters
+with vLLM and BFCL metrics.
 
-## Dataset preparation
+Training and evaluation use separate pinned environments so each workflow runs
+with its validated dependency versions.
 
-The data pipeline converts source-specific records into one canonical conversation schema before splitting. Built-in adapters currently support raw ToolACE and xLAM 60K sources.
+## Features
 
-```bash
-nemotron3-fc inspect-dataset --adapter toolace --path /data/toolace/data.json
-nemotron3-fc prepare-data --config configs/prepare-data.example.json
+- ToolACE and xLAM conversion with leakage checks
+- BF16 LoRA training with assistant response masking
+- Atomic checkpoints and exact training resumption
+- Training metrics, periodic validation, and complete validation after each epoch
+- vLLM evaluation with BFCL metrics and exact call diagnostics
+- Portable resolution of models, datasets, adapters, and wheel bundles
+
+## Repository layout
+
+```text
+configs/                     Run and artifact configurations
+environments/training/       Training dependency contract
+environments/serving/        Evaluation dependency contract
+scripts/run.py               Main launcher
+scripts/fetch_artifacts.py   Artifact download utility
+src/nemotron3_fc/data/       Dataset preparation
+src/nemotron3_fc/training/   LoRA training and checkpoint management
+src/nemotron3_fc/evaluation/ vLLM inference and evaluation
+tests/                       CPU tests
 ```
 
-`prepare-data` performs source conversion, rejection accounting, exact deduplication, whole-conversation grouping, deterministic split assignment, numeric-template quarantine, cross-split leakage auditing, JSONL round-trip validation, and SHA-256 manifest generation.
+## Environments
 
-Each configured source receives its own directory containing:
+Training uses Transformers 5.5.0 with PEFT 0.21.0. Evaluation uses vLLM 0.18.0
+with Transformers 4.57.6. The launcher selects the correct isolated environment
+before importing either stack.
 
-- `train.jsonl`
-- `validation.jsonl`
-- `test.jsonl`
-- `rejected.jsonl`
-- `manifest.json`
+Run configurations use portable references such as `artifact://model` and
+`artifact://toolace`. Artifact locations are declared in
+`configs/artifacts.json`.
 
-The output root also contains `preparation.json` and `split-report.json`. Dataset paths, adapters, expected source identities, split ratios, random seed, and multi-turn holdout requirements are configuration values.
+## Prepare data
 
-## LoRA training
-
-Training is configured with JSON and consumes canonical split directories produced by the data pipeline.
-
-```bash
-nemotron3-fc train --config configs/train-toolace.example.json
-```
-
-The training command provides assistant-only supervision, over-length record windowing, deterministic token-budget batching, BF16 LoRA, fused AdamW, linear warmup followed by a constant learning rate, stratified monitoring, full epoch-end validation, atomic checkpoints, exact resumption, best-adapter selection, JSONL metrics, and separate-scale training plots.
-
-For a short integration run, copy the example configuration and change `mode` to `quick-test`. Full runs use every configured training and validation record. Resume runs use `start_from: "checkpoint"` and explicitly provide both `previous_checkpoint` and `previous_best` from the same run number.
-
-## vLLM evaluation
-
-The `evaluate` command performs greedy, batched generation for every assistant turn in a canonical held-out split. It scores native Nemotron tool calls with BFCL-v3-style AST, relevance, and irrelevance checks, alongside strict exact-call diagnostics. These are adapted metrics on the selected dataset, not official BFCL leaderboard results.
+The preparation pipeline converts the ToolACE and xLAM source datasets and keeps
+their processed outputs separate.
 
 ```bash
-nemotron3-fc evaluate --config configs/evaluate.example.json
+python scripts/run.py prepare-data --config configs/prepare-data.example.json
 ```
 
-Set the model, dataset, adapter, and output paths in the JSON file. Adapters are named explicitly, so the same command can evaluate any number of checkpoints. The optional six-prompt base-versus-adapter probe requires call, no-call, and multi-turn examples; set `probe` to `false` for a split without those categories. A manifest hash is checked when the split directory has a manifest. Each adapter writes per-turn predictions, an input-identity file, and a summary; two adapters additionally produce a paired CSV and comparison summary. Completed predictions can be resumed from the same output directory or copied from `previous_results_dir` when all input identities match. Partial runs remain labeled incomplete.
+The pipeline verifies record counts, file hashes, record identity, split
+isolation, and JSONL round trips before writing the output.
+
+## Train
+
+Use the same command on any supported GPU host. The launcher detects the current
+environment, resolves the configured artifacts, and prepares the pinned training
+environment.
+
+```bash
+python scripts/run.py train --config configs/train-toolace.portable.json
+```
+
+Set `mode` to `quick-test` for a short integration check or `full` for a complete
+run. A resumed run must reference the previous checkpoint and its matching best
+adapter.
+
+## Evaluate
+
+Evaluation performs greedy vLLM generation for every assistant turn in the
+selected test split. BFCL metrics are primary. Exact native call comparisons are
+retained as diagnostics.
+
+```bash
+python scripts/run.py evaluate --config configs/evaluate-two-epochs.portable.json
+```
+
+Each adapter receives its own prediction file, identity record, and summary.
+Evaluation of multiple adapters also produces paired results and a comparison
+summary. Compatible completed predictions are reused automatically.
+
+## Artifact sources
+
+Models, processed datasets, adapters, and wheel bundles can be supplied through
+local paths, mounted directories, or the artifact cache. Kaggle datasets can be
+used as an optional artifact registry without changing the training or evaluation
+code.
+
+Download selected artifacts into the local cache:
+
+```bash
+python scripts/fetch_artifacts.py model toolace training-wheels --source kaggle
+```
+
+Select Kaggle explicitly as the artifact source for a normal run when required:
+
+```bash
+python scripts/run.py train --artifact-source kaggle --package-source kaggle --config configs/train-toolace.portable.json
+```
+
+Use `--artifact-cache` to place large downloads on a persistent volume. Hosts
+without network access can use already mounted artifacts and wheel bundles.
+
+## Tests
+
+Install the test dependency and run the CPU test suite:
+
+```bash
+python -m pip install -e ".[test]"
+python -m pytest
+```
