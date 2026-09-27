@@ -55,6 +55,12 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--config", required=True, type=Path)
     evaluate = commands.add_parser("evaluate", help="Run vLLM inference and BFCL-style turn-level scoring")
     evaluate.add_argument("--config", required=True, type=Path)
+    serve = commands.add_parser("serve", help="Launch the vLLM OpenAI-compatible server")
+    serve.add_argument("--config", required=True, type=Path)
+    verify = commands.add_parser("verify-serving", help="Start, validate, and stop the vLLM API")
+    verify.add_argument("--config", required=True, type=Path)
+    check = commands.add_parser("check-serving", help="Validate a running local serving API")
+    check.add_argument("--config", required=True, type=Path)
     return parser
 
 
@@ -79,6 +85,17 @@ def main(argv: list[str] | None = None) -> int:
         from nemotron3_fc.evaluation.runner import run_evaluation
 
         run_evaluation(load_evaluation_config(args.config))
+        return 0
+    if args.command in {"serve", "verify-serving"}:
+        from nemotron3_fc.serving.config import load_serving_config
+        from nemotron3_fc.serving.server import run_server
+
+        return run_server(load_serving_config(args.config), verify=args.command == "verify-serving")
+    if args.command == "check-serving":
+        from nemotron3_fc.serving.config import load_serving_config
+        from nemotron3_fc.serving.check import run_serving_check
+
+        run_serving_check(load_serving_config(args.config, validate_inputs=False))
         return 0
     raise RuntimeError(f"Unhandled command: {args.command}")
 

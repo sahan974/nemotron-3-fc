@@ -1,0 +1,16 @@
+{
+  "model_path": "artifact://model",
+  "adapter_path": "artifact://two-epoch-training-output/nemotron-3-fc-toolace-warmup-constant-run-01/best-adapter",
+  "output_dir": "../outputs/serving",
+  "host": "127.0.0.1",
+  "port": 8000,
+  "base_model_name": "nemotron-3-fc",
+  "adapter_name": "epoch-1",
+  "max_model_len": 4096,
+  "max_num_seqs": 8,
+  "max_num_batched_tokens": 8192,
+  "max_lora_rank": 16,
+  "gpu_memory_utilization": 0.85,
+  "startup_timeout_seconds": 1500,
+  "request_timeout_seconds": 300
+}

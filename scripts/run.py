@@ -22,7 +22,7 @@ from nemotron3_fc.artifacts import load_artifact_manifest, resolve_artifacts, wr
 from nemotron3_fc.environment import RuntimeContract, detect_platform, load_runtime_contract
 from nemotron3_fc.paths import ARTIFACT_MAP_ENV
 
-ROLE_BY_COMMAND = {"train": "training", "evaluate": "serving"}
+ROLE_BY_COMMAND = {"train": "training", "evaluate": "serving", "serve": "serving", "verify-serving": "serving"}
 PACKAGES = {
     "training": [
         "torch==2.10.0",
@@ -69,7 +69,7 @@ print(torch.__version__, transformers.__version__, vllm.__version__)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["prepare-data", *sorted(ROLE_BY_COMMAND)])
+    parser.add_argument("command", choices=["prepare-data", "check-serving", *sorted(ROLE_BY_COMMAND)])
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--platform", choices=["auto", "kaggle", "gpu-machine"], default="auto")
     parser.add_argument("--platform-profile", type=Path)
@@ -304,6 +304,7 @@ def runtime_environment(contract: RuntimeContract, artifact_map: Path | None = N
                 "TRANSFORMERS_OFFLINE": "1",
                 "HF_DATASETS_OFFLINE": "1",
                 "TOKENIZERS_PARALLELISM": "false",
+                "PYTHONNOUSERSITE": "1",
                 "USE_TF": "0",
                 "USE_FLAX": "0",
             }
@@ -374,9 +375,9 @@ def main() -> int:
     cache = args.artifact_cache.resolve() if args.artifact_cache else None
     specs = load_artifact_manifest(args.artifact_manifest.resolve(), REPO_ROOT, cache)
 
-    if args.command == "prepare-data":
+    if args.command in {"prepare-data", "check-serving"}:
         if args.bootstrap_only:
-            raise ValueError("--bootstrap-only applies only to training and evaluation environments")
+            raise ValueError("--bootstrap-only applies only to GPU runtime commands")
 
         platform = detect_platform(args.platform)
         resolved = resolve_artifacts(

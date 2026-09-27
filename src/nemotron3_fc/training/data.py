@@ -304,7 +304,7 @@ def make_epoch_batches(
                 current_source = item.source
     if current:
         batches.append(tuple(current))
-    # Start the first epoch with a singleton as a low-memory smoke step before
+    # Start the first epoch with a singleton as a low-memory initial step before
     # the scheduler reaches ordinary packed batches.
     if epoch == 0 and batches and len(batches[0]) > 1:
         first = batches[0]

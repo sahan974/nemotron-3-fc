@@ -80,6 +80,38 @@ Each adapter receives its own prediction file, identity record, and summary.
 Evaluation of multiple adapters also produces paired results and a comparison
 summary. Compatible completed predictions are reused automatically.
 
+## Serve
+
+The serving command starts the vLLM OpenAI-compatible API with the base model
+and an epoch-1 LoRA adapter. Edit `configs/serve.example.json` to select a
+different adapter, port, or output directory. The server remains available until
+you stop the command. Its process log is saved as `vllm-server.log` in the
+configured output directory.
+
+```bash
+python scripts/run.py serve --config configs/serve.example.json
+```
+
+From another terminal, check the live API and run a complete tool exchange:
+
+```bash
+python scripts/run.py check-serving --config configs/serve.example.json
+```
+
+For an automated validation run that starts and stops the server itself, use:
+
+```bash
+python scripts/run.py verify-serving --config configs/serve.example.json
+```
+
+The serving check validates the model list, base chat, adapter tool call, tool result,
+and final response. Its weather tool returns a fixed test value. The result is
+saved as `serving-check.json` in the same output directory.
+
+On a read-only mounted checkout, copy the serving configuration to a writable
+location and set `output_dir` to a writable directory before running
+`verify-serving`.
+
 ## Artifact sources
 
 Models, processed datasets, adapters, and wheel bundles can be supplied through
