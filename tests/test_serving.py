@@ -63,13 +63,13 @@ def test_serving_check_exercises_complete_tool_exchange(tmp_path: Path, monkeypa
                             "type": "function",
                             "function": {
                                 "name": "get_current_weather",
-                                "arguments": '{"location":"Colombo, Sri Lanka","unit":"celsius"}',
+                                "arguments": '{"location":"Boston, United States","unit":"fahrenheit"}',
                             },
                         }],
                     }
                 }]
             }
-        return {"choices": [{"message": {"content": "Colombo is 29°C and partly cloudy."}}]}
+        return {"choices": [{"message": {"content": "Boston is 29°F and partly cloudy."}}]}
 
     monkeypatch.setattr("nemotron3_fc.serving.check._get_json", fake_get)
     monkeypatch.setattr("nemotron3_fc.serving.check._post_json", fake_post)

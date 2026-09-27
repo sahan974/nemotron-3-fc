@@ -74,7 +74,7 @@ def weather_tool() -> dict[str, Any]:
 
 def execute_weather_fixture(arguments: dict[str, Any]) -> dict[str, Any]:
     """Return deterministic tool data so this test never depends on live weather."""
-    if arguments != {"location": "Colombo, Sri Lanka", "unit": "celsius"}:
+    if arguments != {"location": "Boston, United States", "unit": "fahrenheit"}:
         raise RuntimeError(f"Unexpected tool arguments: {arguments}")
     return {
         "location": arguments["location"],
@@ -111,7 +111,7 @@ def validate_api(config: ServingConfig) -> dict[str, Any]:
     tool = weather_tool()
     user_message = {
         "role": "user",
-        "content": "Use the available tool to obtain the current weather in Colombo, Sri Lanka. Use celsius.",
+        "content": "Use the available tool to obtain the current weather in Boston, United States. Use fahrenheit.",
     }
     call_response = _chat(
         config,
