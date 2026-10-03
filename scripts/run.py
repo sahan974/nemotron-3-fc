@@ -22,7 +22,13 @@ from nemotron3_fc.artifacts import load_artifact_manifest, resolve_artifacts, wr
 from nemotron3_fc.environment import RuntimeContract, detect_platform, load_runtime_contract
 from nemotron3_fc.paths import ARTIFACT_MAP_ENV
 
-ROLE_BY_COMMAND = {"train": "training", "evaluate": "serving", "serve": "serving", "verify-serving": "serving"}
+ROLE_BY_COMMAND = {
+    "train": "training",
+    "evaluate": "serving",
+    "serve": "serving",
+    "verify-serving": "serving",
+    "benchmark-serving": "serving",
+}
 PACKAGES = {
     "training": [
         "torch==2.10.0",
@@ -80,6 +86,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force-artifacts", action="store_true")
     parser.add_argument("--rebuild-environment", action="store_true")
     parser.add_argument("--bootstrap-only", action="store_true")
+    parser.add_argument("--output-dir", type=Path, help="Override the serving report and log directory")
     return parser.parse_args()
 
 
@@ -372,6 +379,8 @@ def config_artifact_names(path: Path) -> list[str]:
 
 def main() -> int:
     args = parse_args()
+    if args.output_dir and args.command not in {"serve", "verify-serving", "check-serving", "benchmark-serving"}:
+        raise ValueError("--output-dir applies only to serving commands")
     cache = args.artifact_cache.resolve() if args.artifact_cache else None
     specs = load_artifact_manifest(args.artifact_manifest.resolve(), REPO_ROOT, cache)
 
@@ -392,17 +401,10 @@ def main() -> int:
         env["PYTHONPATH"] = os.pathsep.join([str(SRC_ROOT), *([existing] if existing else [])])
         env[ARTIFACT_MAP_ENV] = str(artifact_map)
 
-        run(
-            [
-                sys.executable,
-                "-m",
-                "nemotron3_fc.cli",
-                "prepare-data",
-                "--config",
-                str(args.config.resolve()),
-            ],
-            env=env,
-        )
+        command = [sys.executable, "-m", "nemotron3_fc.cli", args.command, "--config", str(args.config.resolve())]
+        if args.output_dir:
+            command.extend(["--output-dir", str(args.output_dir.resolve())])
+        run(command, env=env)
 
         return 0
 
@@ -437,10 +439,10 @@ def main() -> int:
 
     artifact_map = write_artifact_map(map_root / "resolved.json", resolved)
 
-    run(
-        [str(python), "-m", "nemotron3_fc.cli", args.command, "--config", str(args.config.resolve())],
-        env=runtime_environment(contract, artifact_map),
-    )
+    command = [str(python), "-m", "nemotron3_fc.cli", args.command, "--config", str(args.config.resolve())]
+    if args.output_dir:
+        command.extend(["--output-dir", str(args.output_dir.resolve())])
+    run(command, env=runtime_environment(contract, artifact_map))
     return 0
 
 

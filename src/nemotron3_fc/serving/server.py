@@ -11,8 +11,12 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from nemotron3_fc.serving.config import ServingConfig
+
+if TYPE_CHECKING:
+    from nemotron3_fc.serving.benchmark import BenchmarkConfig
 
 
 def server_command(config: ServingConfig) -> list[str]:
@@ -111,8 +115,10 @@ def stop_server(process: subprocess.Popen) -> None:
         process.wait(timeout=30)
 
 
-def run_server(config: ServingConfig, *, verify: bool = False) -> int:
-    """Serve continuously, or validate the API and then stop it."""
+def run_server(
+    config: ServingConfig, *, verify: bool = False, benchmark_config: BenchmarkConfig | None = None
+) -> int:
+    """Serve continuously, validate the API, or measure serving performance."""
     config.output_dir.mkdir(parents=True, exist_ok=True)
     log_path = config.output_dir / "vllm-server.log"
     print("SERVER LOG", log_path, flush=True)
@@ -134,10 +140,15 @@ def run_server(config: ServingConfig, *, verify: bool = False) -> int:
 
                 run_serving_check(config)
                 return 0
+            if benchmark_config is not None:
+                from nemotron3_fc.serving.benchmark import run_benchmark
+
+                run_benchmark(config, benchmark_config)
+                return 0
             return process.wait()
         except KeyboardInterrupt:
             print("SERVER SHUTDOWN requested", flush=True)
-            return 130 if verify else 0
+            return 130 if verify or benchmark_config is not None else 0
         finally:
             stop_server(process)
             print("SERVER STOPPED | log:", log_path, flush=True)

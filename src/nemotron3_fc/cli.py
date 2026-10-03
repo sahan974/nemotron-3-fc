@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 
 from nemotron3_fc.data.adapters.toolace import ToolACEAdapter
@@ -57,10 +58,16 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--config", required=True, type=Path)
     serve = commands.add_parser("serve", help="Launch the vLLM OpenAI-compatible server")
     serve.add_argument("--config", required=True, type=Path)
+    serve.add_argument("--output-dir", type=Path)
     verify = commands.add_parser("verify-serving", help="Start, validate, and stop the vLLM API")
     verify.add_argument("--config", required=True, type=Path)
+    verify.add_argument("--output-dir", type=Path)
+    benchmark = commands.add_parser("benchmark-serving", help="Measure vLLM serving performance")
+    benchmark.add_argument("--config", required=True, type=Path)
+    benchmark.add_argument("--output-dir", type=Path)
     check = commands.add_parser("check-serving", help="Validate a running local serving API")
     check.add_argument("--config", required=True, type=Path)
+    check.add_argument("--output-dir", type=Path)
     return parser
 
 
@@ -90,13 +97,28 @@ def main(argv: list[str] | None = None) -> int:
         from nemotron3_fc.serving.config import load_serving_config
         from nemotron3_fc.serving.server import run_server
 
-        return run_server(load_serving_config(args.config), verify=args.command == "verify-serving")
+        config = load_serving_config(args.config)
+        if args.output_dir:
+            config = replace(config, output_dir=args.output_dir.resolve())
+        return run_server(config, verify=args.command == "verify-serving")
     if args.command == "check-serving":
         from nemotron3_fc.serving.config import load_serving_config
         from nemotron3_fc.serving.check import run_serving_check
 
-        run_serving_check(load_serving_config(args.config, validate_inputs=False))
+        config = load_serving_config(args.config, validate_inputs=False)
+        if args.output_dir:
+            config = replace(config, output_dir=args.output_dir.resolve())
+        run_serving_check(config)
         return 0
+    if args.command == "benchmark-serving":
+        from nemotron3_fc.serving.benchmark import load_benchmark_config
+        from nemotron3_fc.serving.config import load_serving_config
+        from nemotron3_fc.serving.server import run_server
+
+        config = load_serving_config(args.config)
+        if args.output_dir:
+            config = replace(config, output_dir=args.output_dir.resolve())
+        return run_server(config, benchmark_config=load_benchmark_config(args.config))
     raise RuntimeError(f"Unhandled command: {args.command}")
 
 
